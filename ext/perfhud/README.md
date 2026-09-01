@@ -37,6 +37,47 @@ while `perfhud.Visible` is set, so the hitch recorder keeps working with the
 charts hidden. Bind `perfhud.Toggle` to a key, or launch with `SHIREI_HUD=1`
 to start with the panel up.
 
+## Use it outside a Shirei app
+
+A host with its own render loop — a game on OpenGL, a video canvas — has no
+Shirei backend to run a frame or present one. `Overlay` is that missing half:
+it drives the frame, translates input, and hands back a pixel buffer that is
+**transparent everywhere the panel does not paint**, so the host keeps its own
+picture and gets the charts on top.
+
+```go
+var hud perfhud.Overlay
+
+hud.Init() // once
+
+// every frame, after drawing the scene:
+hud.Pointer(cursorX, cursorY)                  // logical points
+if pix := hud.Frame(fbW, fbH, scale, nil); pix != nil {
+	w, h := hud.Size()
+	uploadRGBATexture(pix, w, h)               // premultiplied, top-down
+}
+if hud.HasContent() {
+	composite()                                // dst = src.rgb + dst*(1-src.a)
+}
+```
+
+`Frame` returns nil when the picture has not changed, so the host uploads only
+on a real change; it repaints on any input at once and otherwise at most every
+`Repaint` (50ms), because the charts do not need the host's full frame rate.
+`HasContent` goes false when the panel is hidden and there is nothing to
+composite. Route clicks with `WantsPointer`: true means the pointer is over a
+panel row, false means the click belongs to the scene behind it. Feed input
+with `Pointer`, `PointerAway`, `Button` and `Scroll`.
+
+Pass a frame function to `Frame` and the host's own Shirei UI is built first,
+with the panel floating over it — one surface, one upload, for both.
+
+Under it are three additions to Shirei core, for a host that would rather
+drive its own renderer: `SoftRenderer.Transparent` (clear to alpha 0 instead
+of opaque white), `AnyHovered` (is the pointer over the UI at all) and
+`SurfacePaints` (did this frame draw anything, which the surface count cannot
+tell you — the root container always emits one).
+
 ## Record hitches
 
 Off by default, because it writes files:
