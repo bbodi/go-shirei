@@ -26,6 +26,12 @@ type Stat struct{ Key, Value string }
 type TableRow struct {
 	Value string
 	Name  string
+
+	// Heat grades the row from 0 (cheap) to 1 (this row is the whole cost).
+	// The renderer reads it only when the table sets Graded. It is a plain
+	// number rather than a color because perfcore knows nothing about
+	// rendering.
+	Heat float64
 }
 
 // Chart is one sparkline. Colors belong to the renderer, which picks one per
@@ -56,6 +62,11 @@ type Table struct {
 	// show for one row. A renderer opens that in a detail view. The row index
 	// refers to the slice Rows returned on the frame of the click.
 	Detail func(row int) string
+	// Graded says the rows carry Heat and want coloring by it, green to red.
+	// A table whose rows keep a fixed order sets this: the color says what
+	// dominates, so the reader's eye can still find a row where it was last
+	// time. A table that sorts by cost does not need it.
+	Graded bool
 }
 
 // Probe is a number read once per frame and kept in the history, so a Chart

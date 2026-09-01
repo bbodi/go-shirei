@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"go.hasen.dev/shirei/ext/perfhud/perfcore"
+
 	. "go.hasen.dev/shirei"
 )
 
@@ -72,6 +74,56 @@ func TestOverlayFrameSkipsAnUnchangedPicture(t *testing.T) {
 	// So does a resize.
 	if pix := o.Frame(w/2, h, 1, nil); pix == nil {
 		t.Error("no repaint after a resize")
+	}
+}
+
+// A quiet frame must not build the UI at all: the build is the expensive part,
+// and a host calls Frame hundreds of times a second.
+func TestOverlayQuietFrameDoesNotBuild(t *testing.T) {
+	const w, h = 900, 600
+	o := embedOverlay(t)
+	o.Repaint = time.Hour
+
+	builds := 0
+	count := func() { builds++ }
+
+	o.Frame(w, h, 1, count)
+	if builds != 1 {
+		t.Fatalf("the first frame ran %d builds, want 1", builds)
+	}
+	for range 50 {
+		o.Frame(w, h, 1, count)
+	}
+	if builds != 1 {
+		t.Errorf("50 quiet frames ran %d builds, want 1", builds)
+	}
+
+	// Each of these is a reason to build again.
+	o.Pointer(10, 10)
+	o.Frame(w, h, 1, count)
+	o.Invalidate()
+	o.Frame(w, h, 1, count)
+	Visible = false
+	o.Frame(w, h, 1, count)
+	if builds != 4 {
+		t.Errorf("input, Invalidate and a Visible toggle ran %d builds, want 4", builds)
+	}
+}
+
+// Sampling is the one thing that must not be skipped: the hitch detector and
+// the chart history are why a host calls Frame every frame.
+func TestOverlaySamplesOnEveryFrame(t *testing.T) {
+	const w, h = 900, 600
+	o := embedOverlay(t)
+	o.Repaint = time.Hour
+
+	o.Frame(w, h, 1, nil)
+	before := len(perfcore.History())
+	for range 20 {
+		o.Frame(w, h, 1, nil)
+	}
+	if got := len(perfcore.History()) - before; got == 0 {
+		t.Error("20 quiet frames added no samples; the charts would stall and hitches go unrecorded")
 	}
 }
 

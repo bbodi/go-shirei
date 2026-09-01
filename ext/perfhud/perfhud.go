@@ -366,13 +366,31 @@ func drawTable(idx int, t *Table, width float32) {
 						openDetail(detailKey(idx, rows[i].Name), rows[i].Name, t.Detail(i))
 					}
 				}
+				value := th.RowValue
+				if t.Graded {
+					value = heatColor(rows[i].Heat)
+				}
 				Container(Attrs(Row, FixWidth(vw), MainAlign(AlignEnd)), func() {
-					Label(rows[i].Value, small(th.RowValue))
+					Label(rows[i].Value, small(value))
 				})
 				Label(elide(rows[i].Name, budget), small(th.RowName))
 			})
 		}
 	})
+}
+
+// heatColor grades a row's value from green to red by its Heat. Shirei colors
+// are HSLA, so the whole scale is one slide along the hue: 140 is green, 0 is
+// red, and the saturation and lightness stay put so every step reads at the
+// same weight on the panel.
+func heatColor(heat float64) Vec4 {
+	if heat < 0 {
+		heat = 0
+	}
+	if heat > 1 {
+		heat = 1
+	}
+	return Vec4{float32(140 * (1 - heat)), 75, 62, 1}
 }
 
 // nameBudget is how many monospace characters fit in w logical pixels. The

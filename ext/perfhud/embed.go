@@ -12,6 +12,8 @@ package perfhud
 import (
 	"time"
 
+	"go.hasen.dev/shirei/ext/perfhud/perfcore"
+
 	. "go.hasen.dev/shirei"
 )
 
@@ -37,8 +39,8 @@ import (
 type Overlay struct {
 	// Repaint is the shortest gap between repaints while only the numbers are
 	// moving. Input repaints immediately, whatever this says. Zero means the
-	// default below — the charts do not need 200 Hz, and every repaint is a
-	// software render plus a texture upload the host pays for.
+	// default below — the charts do not need the host's frame rate, and a
+	// repaint costs a whole UI build, a software render and a texture upload.
 	Repaint time.Duration
 
 	// GlyphCacheBytes is the budget for the shared glyph cache. Text does not
@@ -49,16 +51,17 @@ type Overlay struct {
 	buf     []byte
 	devW    int
 	devH    int
-	content bool // the last frame painted something
+	content bool // the last build painted something
 	painted bool // buf holds a frame the host has been given
 	hash    uint64
-	dirty   bool // input arrived since the last repaint
+	dirty   bool // input or the host asked for a rebuild
 	away    bool // the pointer is parked: the next move is not a drag
+	shown   bool // Visible as of the last build, to notice a toggle
 	next    time.Time
 }
 
 const (
-	defaultRepaint         = 50 * time.Millisecond
+	defaultRepaint         = 100 * time.Millisecond
 	defaultGlyphCacheBytes = 16 << 20
 )
 
@@ -78,15 +81,18 @@ func (o *Overlay) Init() {
 	o.PointerAway()
 }
 
-// Frame runs one UI frame at the given device size and scale (device pixels
-// per logical point) and returns the pixels to upload, or nil when the
-// picture is unchanged. fn builds the host's own UI first, so the panel
-// floats over it; pass nil for the panel alone.
+// Frame advances the overlay by one host frame and returns the pixels to
+// upload, or nil when the host should keep showing its last upload. fn builds
+// the host's own UI, so the panel floats over it; pass nil for the panel
+// alone.
 //
-// It samples on every call and runs the hitch detector whether or not the
-// panel is visible, so a host calls it every frame and stops compositing when
-// HasContent goes false.
+// Sampling and the hitch detector run on every call. The UI itself is built
+// only when there is a reason to — input, a resize, the panel being toggled,
+// or the repaint interval elapsing — because building it is by far the most
+// expensive thing here and a host calls this hundreds of times a second.
 func (o *Overlay) Frame(devW, devH int, scale float32, fn FrameFn) []byte {
+	perfcore.Collect()
+
 	if devW <= 0 || devH <= 0 {
 		o.content = false
 		return nil
@@ -94,15 +100,25 @@ func (o *Overlay) Frame(devW, devH int, scale float32, fn FrameFn) []byte {
 	if scale <= 0 {
 		scale = 1
 	}
+	resized := o.devW != devW || o.devH != devH
+	if !o.buildNow(resized) {
+		return nil
+	}
+	o.shown, o.dirty = Visible, false
+
 	h := GetHost()
 	h.WindowScale = scale
 	h.WindowSize = Vec2{float32(devW) / scale, float32(devH) / scale}
 
+	// Draw's own painting half. Collect already ran above, and KeepAwake means
+	// nothing to a host that draws every frame anyway.
 	out := RunFrameFn(func() {
 		if fn != nil {
 			fn()
 		}
-		Draw() // last, so the panel floats over the host's own UI
+		if Visible {
+			drawPanel() // last, so the panel floats over the host's own UI
+		}
 	})
 
 	o.content = anyPaints(out.Surfaces)
@@ -110,11 +126,12 @@ func (o *Overlay) Frame(devW, devH int, scale float32, fn FrameFn) []byte {
 		o.painted = false
 		return nil
 	}
-	resized := o.devW != devW || o.devH != devH
-	if !o.repaintNow(out.SurfacesHash, resized) {
+	// The build was cheap enough to run; the render and the upload are not, so
+	// an unchanged picture still stops here.
+	if o.painted && !resized && out.SurfacesHash == o.hash {
 		return nil
 	}
-	o.devW, o.devH, o.hash, o.painted, o.dirty = devW, devH, out.SurfacesHash, true, false
+	o.devW, o.devH, o.hash, o.painted = devW, devH, out.SurfacesHash, true
 
 	if need := devW * devH * 4; cap(o.buf) < need {
 		o.buf = make([]byte, need)
@@ -125,24 +142,11 @@ func (o *Overlay) Frame(devW, devH int, scale float32, fn FrameFn) []byte {
 	return o.buf
 }
 
-// anyPaints reports whether the frame drew anything. The root container
-// always emits a surface, so the count alone says nothing.
-func anyPaints(surfaces []Surface) bool {
-	for i := range surfaces {
-		if SurfacePaints(&surfaces[i]) {
-			return true
-		}
-	}
-	return false
-}
-
-// repaintNow decides whether this frame is worth rendering: anything the user
-// did, a resize, or a content change that is past the repaint interval.
-func (o *Overlay) repaintNow(hash uint64, resized bool) bool {
-	if o.painted && !resized && !o.dirty {
-		if hash == o.hash {
-			return false
-		}
+// buildNow decides whether this frame is worth building: anything the user or
+// the host did, a resize, the panel appearing or disappearing, or the repaint
+// interval running out on numbers that keep moving.
+func (o *Overlay) buildNow(resized bool) bool {
+	if o.painted && !resized && !o.dirty && Visible == o.shown {
 		if time.Now().Before(o.next) {
 			return false
 		}
@@ -153,6 +157,22 @@ func (o *Overlay) repaintNow(hash uint64, resized bool) bool {
 	}
 	o.next = time.Now().Add(gap)
 	return true
+}
+
+// Invalidate asks for a build on the next Frame. A host calls it when its own
+// UI changes for a reason the overlay cannot see — a key that opens a panel,
+// say. Pointer input already does this on its own.
+func (o *Overlay) Invalidate() { o.dirty = true }
+
+// anyPaints reports whether the frame drew anything. The root container
+// always emits a surface, so the count alone says nothing.
+func anyPaints(surfaces []Surface) bool {
+	for i := range surfaces {
+		if SurfacePaints(&surfaces[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 // Size reports the device size of the last buffer Frame returned.
