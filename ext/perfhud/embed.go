@@ -47,6 +47,12 @@ type Overlay struct {
 	// render at all with no cache, so zero means the default below.
 	GlyphCacheBytes int
 
+	// SkipCollect leaves sampling to the host. Overlay.Frame otherwise
+	// Collects at the start of the call, which is mid-loop for a game that
+	// still has draw and swap to go. Set this and call perfcore.Collect after
+	// SwapBuffers so one frame number covers the whole iteration.
+	SkipCollect bool
+
 	rend    SoftRenderer
 	buf     []byte
 	devW    int
@@ -86,12 +92,15 @@ func (o *Overlay) Init() {
 // the host's own UI, so the panel floats over it; pass nil for the panel
 // alone.
 //
-// Sampling and the hitch detector run on every call. The UI itself is built
-// only when there is a reason to — input, a resize, the panel being toggled,
-// or the repaint interval elapsing — because building it is by far the most
-// expensive thing here and a host calls this hundreds of times a second.
+// Sampling and the hitch detector run on every call unless SkipCollect is
+// set. The UI itself is built only when there is a reason to — input, a
+// resize, the panel being toggled, or the repaint interval elapsing —
+// because building it is by far the most expensive thing here and a host
+// calls this hundreds of times a second.
 func (o *Overlay) Frame(devW, devH int, scale float32, fn FrameFn) []byte {
-	perfcore.Collect()
+	if !o.SkipCollect {
+		perfcore.Collect()
+	}
 
 	if devW <= 0 || devH <= 0 {
 		o.content = false

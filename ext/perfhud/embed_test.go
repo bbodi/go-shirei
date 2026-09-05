@@ -127,6 +127,22 @@ func TestOverlaySamplesOnEveryFrame(t *testing.T) {
 	}
 }
 
+func TestOverlaySkipCollectLeavesSamplingToTheHost(t *testing.T) {
+	const w, h = 900, 600
+	o := embedOverlay(t)
+	o.SkipCollect = true
+	o.Repaint = time.Hour
+
+	o.Frame(w, h, 1, nil)
+	before := len(perfcore.History())
+	for range 20 {
+		o.Frame(w, h, 1, nil)
+	}
+	if got := len(perfcore.History()) - before; got != 0 {
+		t.Errorf("SkipCollect still sampled %d frames", got)
+	}
+}
+
 func TestOverlayHasNoContentWhenHidden(t *testing.T) {
 	const w, h = 900, 600
 	o := embedOverlay(t)

@@ -146,27 +146,44 @@ func appendWindow(ring []Sample, s Sample, now, window float64) []Sample {
 	return ring[cut:]
 }
 
+// percentileScratch is reused so checkHitch can ask for the median every
+// frame without allocating a 5-second slice each time (at 1500 FPS that was
+// the overlay's top allocator).
+var percentileScratch []float64
+
 // Percentile returns the p-th percentile (0..1) of the frame times currently
 // in the chart window, by nearest rank.
 func Percentile(p float64) float64 {
-	vals := make([]float64, 0, len(hist))
+	n := 0
 	for i := range hist {
 		if hist[i].FrameMs > 0 {
-			vals = append(vals, hist[i].FrameMs)
+			n++
 		}
 	}
-	if len(vals) == 0 {
+	if n == 0 {
 		return 0
 	}
-	sort.Float64s(vals)
-	i := int(p*float64(len(vals))+0.5) - 1
+	if cap(percentileScratch) < n {
+		percentileScratch = make([]float64, n)
+	} else {
+		percentileScratch = percentileScratch[:n]
+	}
+	j := 0
+	for i := range hist {
+		if hist[i].FrameMs > 0 {
+			percentileScratch[j] = hist[i].FrameMs
+			j++
+		}
+	}
+	sort.Float64s(percentileScratch)
+	i := int(p*float64(n)+0.5) - 1
 	if i < 0 {
 		i = 0
 	}
-	if i >= len(vals) {
-		i = len(vals) - 1
+	if i >= n {
+		i = n - 1
 	}
-	return vals[i]
+	return percentileScratch[i]
 }
 
 // histTotalSeconds approximates a pause histogram's cumulative total as
