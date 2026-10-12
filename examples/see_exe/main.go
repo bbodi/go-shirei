@@ -13,6 +13,7 @@ import (
 	"debug/elf"
 	"debug/gosym"
 	"debug/macho"
+	"flag"
 	"fmt"
 	"os"
 	"sort"
@@ -197,57 +198,65 @@ func readPclntab(path string) (*gosym.Table, error) {
 }
 
 func main() {
-	args := os.Args[1:]
-	switch {
-	case len(args) == 0:
-		RunGUI("") // file picker: every Go binary under the current directory
-	case args[0] == "--help" || args[0] == "-h":
-		fmt.Fprintln(os.Stderr, "usage: see_exe                            pick from Go binaries under the current directory")
+	png := flag.String("png", "", "write one GUI frame to PATH and exit")
+	text := flag.Bool("text", false, "print the report to stdout")
+	flag.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: see_exe [-png out.png] [-text] [go-executable] [module]")
+		fmt.Fprintln(os.Stderr, "       see_exe                            pick from Go binaries under the current directory")
 		fmt.Fprintln(os.Stderr, "       see_exe <go-executable>            inspect one binary")
-		fmt.Fprintln(os.Stderr, "       see_exe <go-executable> --text     print the report to stdout")
+		fmt.Fprintln(os.Stderr, "       see_exe -text <go-executable>      print the report to stdout")
 		fmt.Fprintln(os.Stderr, "       see_exe <go-executable> <module>   why is that module embedded (path or substring)")
-		fmt.Fprintln(os.Stderr, "       see_exe [go-executable] --png <out.png> [module]   render one GUI frame headlessly")
-		os.Exit(1)
-	case args[0] == "--png" && len(args) == 2:
-		// picker screenshot: scan the current directory, render the browse view
+		fmt.Fprintln(os.Stderr, "       see_exe -png out.png [go-executable] [module]")
+	}
+	flag.Parse()
+	exe := flag.Arg(0)
+	mod := flag.Arg(1)
+
+	switch {
+	case *png != "" && exe == "":
 		browsing = true
 		scanRoot, _ = os.Getwd()
 		scanBinaries()
-		if err := renderPNG(args[1]); err != nil {
+		if err := renderPNG(*png); err != nil {
 			fmt.Fprintln(os.Stderr, "render to png failed:", err)
 			os.Exit(1)
 		}
-	case len(args) == 1:
-		if err := loadModel(args[0]); err != nil {
+	case *png != "":
+		if err := loadModel(exe); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
-		RunGUI(args[0])
-	case args[1] == "--png" && len(args) >= 3:
-		if err := loadModel(args[0]); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-		if len(args) >= 4 { // optional module query: render with it selected
-			if m := findModule(model.info, args[3]); m != nil {
+		if mod != "" {
+			if m := findModule(model.info, mod); m != nil {
 				selectedPath = m.Path
 			}
 		}
-		if err := renderPNG(args[2]); err != nil {
+		if err := renderPNG(*png); err != nil {
 			fmt.Fprintln(os.Stderr, "render to png failed:", err)
 			os.Exit(1)
 		}
-	default:
-		info, err := LoadExe(args[0])
+	case exe == "":
+		RunGUI("")
+	case *text:
+		info, err := LoadExe(exe)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
-		if args[1] == "--text" {
-			printReport(info)
-		} else {
-			Why(info, args[1])
+		printReport(info)
+	case mod != "":
+		info, err := LoadExe(exe)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
 		}
+		Why(info, mod)
+	default:
+		if err := loadModel(exe); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		RunGUI(exe)
 	}
 }
 

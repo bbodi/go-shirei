@@ -51,7 +51,7 @@ func softRenderImage(scope string, w, h int, scale float32, fn FrameFn) *image.R
 	var rend SoftRenderer
 	devW := int(Roundf32(float32(w) * scale))
 	devH := int(Roundf32(float32(h) * scale))
-	fb := rend.Render(out.Surfaces, devW, devH, scale)
+	fb := rend.Render(out.Surfaces, out.GlyphRuns, devW, devH, scale)
 	return fb.ToRGBA()
 }
 
@@ -271,12 +271,12 @@ func TestSoftRenderIntoMatchesRender(t *testing.T) {
 	}
 
 	var r1 SoftRenderer
-	want := r1.Render(out.Surfaces, w, h, 1).ToRGBA()
+	want := r1.Render(out.Surfaces, out.GlyphRuns, w, h, 1).ToRGBA()
 
 	stride := w*4 + 40 // deliberately padded
 	dst := make([]byte, stride*h)
 	var r2 SoftRenderer
-	r2.RenderInto(dst, stride, w, h, 1, out.Surfaces)
+	r2.RenderInto(dst, stride, w, h, 1, out.Surfaces, out.GlyphRuns)
 	got := (&Framebuffer{W: w, H: h, Stride: stride, Pix: dst}).ToRGBA()
 
 	if !sameRGBA(want, got) {
@@ -334,7 +334,7 @@ func BenchmarkSoftRender(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		rend.Render(out.Surfaces, devW, devH, scale)
+		rend.Render(out.Surfaces, out.GlyphRuns, devW, devH, scale)
 	}
 }
 

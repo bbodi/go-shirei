@@ -115,6 +115,34 @@ func TestRunAllArgsModuleRoot(t *testing.T) {
 	}
 }
 
+func TestRunAllInvocationsNestedModule(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/scan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(root, "nested", "app")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "go.mod"), []byte("module example.com/nested\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pkgs := []*PackageItem{
+		{Dir: filepath.Join(root, "widgets"), Rel: "widgets"},
+		{Dir: nested, Rel: "nested/app"},
+	}
+	invs := runAllInvocations(root, pkgs)
+	if len(invs) != 2 {
+		t.Fatalf("invocations = %d, want 2 (parent module + nested)", len(invs))
+	}
+	if invs[0].Dir != root || len(invs[0].PkgArgs) != 1 || invs[0].PkgArgs[0] != "./widgets" {
+		t.Fatalf("parent inv = %+v", invs[0])
+	}
+	if invs[1].Dir != nested || len(invs[1].PkgArgs) != 1 || invs[1].PkgArgs[0] != "." {
+		t.Fatalf("nested inv = %+v", invs[1])
+	}
+}
+
 // TestDiscoverRootPackageRel keeps Rel as "." for the scan-root package so
 // Run-all path building stays correct. Uses the real shirei module if present.
 func TestDiscoverRootPackageRel(t *testing.T) {
@@ -455,7 +483,7 @@ func TestJSONLPartialLineDoesNotSkipEvent(t *testing.T) {
 
 	report := filepath.Join(dir, "report.jsonl")
 	// Write an incomplete first chunk (no trailing newline).
-	 partial := `{"pkg":"` + dir + `","test":"TestSnap","name":"frame","status":"mismatch"`
+	partial := `{"pkg":"` + dir + `","test":"TestSnap","name":"frame","status":"mismatch"`
 	if err := os.WriteFile(report, []byte(partial), 0o644); err != nil {
 		t.Fatal(err)
 	}

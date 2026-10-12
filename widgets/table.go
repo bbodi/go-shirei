@@ -1,18 +1,20 @@
 package widgets
 
 import (
-	"sort"
+	"slices"
 
 	. "go.hasen.dev/shirei"
 )
 
 // TableColumn describes one column of a Table: how wide it is, how to
-// render a cell, and (optionally) how to compare two rows for sorting by
+// draw a body cell, and (optionally) how to compare two rows for sorting by
 // this column. A nil Less means the column can't be clicked to sort.
 type TableColumn[T any] struct {
 	Label       string
-	Width       f32 // 0 = flexible (Grow(1)); otherwise a fixed pixel width
-	Render      func(row T)
+	AccessName  string      // header query name (lowercase); empty means the header is not assigned
+	Alignment   Alignment   // horizontal alignment of header and cell content; zero starts left
+	Width       f32         // 0 = flexible (Grow(1)); otherwise a fixed pixel width
+	Cell        func(row T) // body cell; runs inside the cell container
 	Less        func(a, b T) bool
 	DefaultDesc bool // sort direction the first time this column is clicked
 }
@@ -55,6 +57,12 @@ type TableAttrs[T any] struct {
 	// hover highlight, click-to-select) via ModAttrs / IsHovered /
 	// PressAction.
 	OnRow func(index int, row T)
+
+	// ScrollOffset, when non-nil, is the caller's vertical scroll in pixels.
+	// Written with the settled offset each frame. When the pointer identity
+	// changes (a different owner's slot) or the table remounts, the list is
+	// restored to *ScrollOffset.
+	ScrollOffset *f32
 }
 
 const tableHeaderHeight = 30
@@ -72,7 +80,16 @@ func Table[T any](key any, rowHeight f32, columns []TableColumn[T], rows []T, ro
 
 // TableExt is Table with the full configuration surface; see TableAttrs.
 func TableExt[T any](key any, attrs TableAttrs[T], columns []TableColumn[T], rows []T, rowKey func(T) any) {
-	ContainerWithKey(key, Attrs(Viewport), func() {
+	tableStyled(key, attrs, columns, rows, rowKey, CurrentColorScheme.Table, CurrentColorScheme.FocusRing, ScrollBars)
+}
+
+// TableStyled supplies literal table and scrollbar colors. Cell builders own their paint.
+func TableStyled[T any](key any, attrs TableAttrs[T], columns []TableColumn[T], rows []T, rowKey func(T) any, style TableStyle, focusRing Vec4) {
+	tableStyled(key, attrs, columns, rows, rowKey, style, focusRing, scrollBarWithStyle(style.ScrollBar))
+}
+
+func tableStyled[T any](key any, attrs TableAttrs[T], columns []TableColumn[T], rows []T, rowKey func(T) any, style TableStyle, focusRing Vec4, scrollBar ScrollBarFn) {
+	ContainerWithKey(key, Attrs(Viewport, BackgroundVec(style.Body.Background), AmendTextStyle(TextColorVec(style.Body.Text))), func() {
 		state := attrs.SortState
 		if state == nil {
 			state = UseWithInit[TableSortState]("table-sort", func() *TableSortState {
@@ -112,9 +129,9 @@ func TableExt[T any](key any, attrs TableAttrs[T], columns []TableColumn[T], row
 				// Clip: FixWidth pins the cell's box but not its painting —
 				// content wider than the column (a long version string, say)
 				// would otherwise bleed into the next column.
-				return Attrs(FixWidth(col.Width), Clip, Pad4(0, 6, 0, 6))
+				return Attrs(FixWidth(col.Width), Clip, CrossAlign(col.Alignment), Pad4(0, 6, 0, 6))
 			}
-			return Attrs(Viewport, MinWidth(columnMinWidth), MainAlign(AlignMiddle), Pad4(0, 6, 0, 6))
+			return Attrs(Viewport, MinWidth(columnMinWidth), MainAlign(AlignMiddle), CrossAlign(col.Alignment), Pad4(0, 6, 0, 6))
 		}
 
 		// Header cells additionally Expand (fill the header row's full
@@ -156,7 +173,7 @@ func TableExt[T any](key any, attrs TableAttrs[T], columns []TableColumn[T], row
 			}
 		}
 
-		headerSeparator := Attrs(FixWidth(1), Expand, Background(0, 0, 80, 1))
+		headerSeparator := Attrs(FixWidth(1), Expand, BackgroundVec(style.Separator))
 		bodySeparator := Attrs(FixWidth(1), Expand) // same width, no background: invisible
 
 		// The header must reserve the same right-hand gutter the body rows do.
@@ -168,16 +185,20 @@ func TableExt[T any](key any, attrs TableAttrs[T], columns []TableColumn[T], row
 		// to the header. Matching the header's right padding (8 + SCROLLBAR_WIDTH)
 		// to the body's usable width lines the two back up; the scrollbar then
 		// floats over the reserved gutter rather than over the last column.
-		Container(Attrs(Row, Expand, CrossMid, Pad4(0, 8+SCROLLBAR_WIDTH, 0, 8), FixHeight(tableHeaderHeight), Background(0, 0, 92, 1)), func() {
+		Container(Attrs(Row, Expand, CrossMid, Pad4(0, 8+SCROLLBAR_WIDTH, 0, 8), FixHeight(tableHeaderHeight), BackgroundVec(style.Header.Background), AmendTextStyle(TextColorVec(style.Header.Text))), func() {
 			forEachColumn(headerSeparator, func(colIndex int, col TableColumn[T]) {
 				sortable := col.Less != nil
 
 				Container(headerCellAttrs(col), func() {
 					if sortable {
-						if IsHovered() {
-							ModAttrs(Background(0, 0, 87, 1))
+						st := ProcessButtonEvents(false)
+						if st.Hovered {
+							ModAttrs(BackgroundVec(style.Hovered))
 						}
-						if PressAction() {
+						if st.FocusVisible {
+							ModAttrs(BorderWidth(2), BorderColorVec(focusRing))
+						}
+						if st.Clicked {
 							if state.Column == colIndex {
 								state.Desc = !state.Desc
 							} else {
@@ -186,16 +207,23 @@ func TableExt[T any](key any, attrs TableAttrs[T], columns []TableColumn[T], row
 							}
 						}
 					}
+					if col.AccessName != "" {
+						NextAccessName(col.AccessName)
+						if sortable {
+							NextAccessRole("button")
+						}
+						AssignAccess()
+					}
 
 					// The label sits inside a small chip that lights up on
 					// the active sort column, with the direction arrow
 					// beside it — so the sorted column reads as a "pressed"
 					// tag rather than a far-away chevron.
-					Container(Attrs(Row, Expand, CrossMid), func() {
+					Container(Attrs(Row, Expand, CrossMid, MainAlign(col.Alignment)), func() {
 						active := sortable && state.Column == colIndex
 						Container(Attrs(Row, CrossMid, Gap(4), Pad2(2, 5), Corners(4)), func() {
 							if active {
-								ModAttrs(Background(0, 0, 82, 1))
+								ModAttrs(BackgroundVec(style.Sorted))
 							}
 							Label(col.Label, FontWeight(WeightBold), FontSize(11))
 							if active {
@@ -218,11 +246,21 @@ func TableExt[T any](key any, attrs TableAttrs[T], columns []TableColumn[T], row
 			sorted = append([]T(nil), rows...) // copy: never mutate the caller's slice
 			less := columns[state.Column].Less
 			desc := state.Desc
-			sort.SliceStable(sorted, func(i, j int) bool {
+			// One less() call per comparison: -1 when strictly less, else 1
+			// (never 0). Stable sort only branches on cmp < 0, so ties keep
+			// insertion order — same semantics as a bool less, without a
+			// second less(b, a) probe to distinguish equality.
+			slices.SortStableFunc(sorted, func(a, b T) int {
 				if desc {
-					return less(sorted[j], sorted[i])
+					if less(b, a) {
+						return -1
+					}
+					return 1
 				}
-				return less(sorted[i], sorted[j])
+				if less(a, b) {
+					return -1
+				}
+				return 1
 			})
 		}
 
@@ -243,11 +281,25 @@ func TableExt[T any](key any, attrs TableAttrs[T], columns []TableColumn[T], row
 				}
 				forEachColumn(bodySeparator, func(_ int, col TableColumn[T]) {
 					Container(columnAttrs(col), func() {
-						col.Render(row)
+						col.Cell(row)
 					})
 				})
 			})
 		}
-		VirtualListView(nil, len(sorted), itemId, itemHeight, itemView)
+		const tableListKey = "body"
+		if attrs.ScrollOffset != nil {
+			owner := Use[*f32]("table-scroll-owner")
+			if *owner != attrs.ScrollOffset {
+				*owner = attrs.ScrollOffset
+				VirtualListView_ScrollTo(tableListKey, *attrs.ScrollOffset)
+			}
+		}
+		virtualListView(tableListKey, VirtualListAttrs{
+			ItemCount:       len(sorted),
+			ItemKey:         itemId,
+			ItemHeight:      itemHeight,
+			ItemView:        itemView,
+			OutScrollOffset: attrs.ScrollOffset,
+		}, scrollBar)
 	})
 }

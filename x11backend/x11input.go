@@ -77,7 +77,7 @@ func handleEvent(ev xgb.Event) bool {
 	case xproto.ClientMessageEvent:
 		// WM_DELETE_WINDOW: the close button.
 		if e.Type == wmProtocols && e.Format == 32 && xproto.Atom(e.Data.Data32[0]) == wmDelete {
-			quit = true
+			g.ExitWithCleanup(0)
 		}
 		return false
 

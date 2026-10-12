@@ -5,8 +5,9 @@ package main
 // Default OptionButton sits above for comparison.
 
 import (
-	"os"
+	"flag"
 	"fmt"
+	"os"
 
 	"go.hasen.dev/shirei/app"
 
@@ -15,8 +16,10 @@ import (
 )
 
 func main() {
-	if len(os.Args) >= 3 && os.Args[1] == "--png" {
-		if err := RenderToPNG(os.Args[2], 640, 560, root); err != nil {
+	png := flag.String("png", "", "write one settled frame to PATH and exit")
+	flag.Parse()
+	if *png != "" {
+		if err := RenderToPNG(*png, 640, 560, root); err != nil {
 			fmt.Println("render to png failed:", err)
 			os.Exit(1)
 		}
@@ -48,10 +51,11 @@ func root() {
 
 	// --- default ----------------------------------------------------------------
 	section("Default widgets (for comparison)")
-	Container(Attrs(Gap(6)), func() {
-		OptionButton(&defaultMood, "Great", "great")
-		OptionButton(&defaultMood, "Okay", "ok")
-		OptionButton(&defaultMood, "Rough", "rough")
+	OptionGroup(&defaultMood, func() {
+		ModAttrs(Gap(6))
+		OptionButton("Great", "great")
+		OptionButton("Okay", "ok")
+		OptionButton("Rough", "rough")
 	})
 
 	// --- Material -------------------------------------------------------------

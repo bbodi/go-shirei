@@ -5,6 +5,7 @@ package waylandbackend
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"time"
 
 	wos "go.hasen.dev/shirei/internal/wayland/os"
@@ -12,7 +13,10 @@ import (
 	"go.hasen.dev/shirei/internal/wayland/wlclient"
 	zxdg "go.hasen.dev/shirei/internal/wayland/xdg"
 
+	g "go.hasen.dev/generic"
 	"go.hasen.dev/shirei"
+	"go.hasen.dev/shirei/gpurender"
+	"go.hasen.dev/shirei/internal/atspi"
 )
 
 // glyphCacheBudget caps total cached glyph-bitmap bytes (enables the shared core
@@ -20,11 +24,12 @@ import (
 const glyphCacheBudget = 16 << 20
 
 var (
-	winTitle    string
-	winIconPath string
-	winW        int
-	winH        int
-	frameFn     shirei.FrameFn
+	winTitle     string
+	winIconPath  string
+	winW         int
+	winH         int
+	frameFn      shirei.FrameFn
+	accessBridge *atspi.Bridge
 
 	disp          *wl.Display
 	registry      *wl.Registry
@@ -55,9 +60,12 @@ var (
 	waitConfigure bool
 	wantsFrame    bool
 	dirty         bool // input/state changed; redraw when no frame callback is pending
-	quit          bool
 
 	softRenderer shirei.SoftRenderer
+
+	havePresented      bool
+	lastPresentedHash  uint64
+	presentW, presentH int
 )
 
 // wlBuffer is one of the double-buffered wl_shm buffers the renderer draws into.
@@ -80,6 +88,10 @@ func SetupWindow(title string, width, height int) {
 	winW, winH = width, height
 }
 
+// SetupQuiet is a no-op on Wayland: this backend never sends an
+// xdg_activation token, so mapping does not steal keyboard focus.
+func SetupQuiet() {}
+
 // SetupIcon records the path of the image (PNG etc.) used as the window icon.
 // Call it before Run. Applied via the staging xdg-toplevel-icon-v1 protocol
 // (hand-bound in waylandicon_linux.go) on compositors that ship it (KDE,
@@ -91,10 +103,12 @@ func SetupIcon(imagePath string) {
 }
 
 // Run connects to the Wayland compositor, opens a window, and runs the dispatch
-// loop. It must be called from the program's main goroutine and does not return
-// until the window is closed. Everything (input + frame production) happens on
-// this one goroutine: Wayland delivers events synchronously inside DisplayDispatch.
+// loop. It must be called from the program's main goroutine and does not return:
+// toplevel close calls generic.ExitWithCleanup so AddExitCleanup handlers run.
+// Everything (input + frame production) happens on this one goroutine: Wayland
+// delivers events synchronously inside DisplayDispatch.
 func Run(fn shirei.FrameFn) {
+	runtime.LockOSThread()
 	frameFn = wrapFrame(fn)
 
 	shirei.GetHost().GlyphCacheBudgetBytes = glyphCacheBudget
@@ -108,6 +122,10 @@ func Run(fn shirei.FrameFn) {
 		ensureDesktopEntry(appID())
 	}
 	createWindow()
+	tryInitGPU()
+	shirei.GetHost().WindowFocused = false
+	accessBridge = atspi.Start(winTitle, shirei.RequestNextFrame)
+	g.AddExitCleanup(accessBridge.Close)
 
 	// Pump events until the toplevel is closed. Wayland delivers a batch of
 	// events per DisplayDispatch; input handlers update the shirei globals and set
@@ -127,7 +145,7 @@ func Run(fn shirei.FrameFn) {
 	// dispatch trick can help. SHIREI_WL_DEBUG prints event timing.)
 	const framePoll = 16 * time.Millisecond
 	wlDebug("wl backend build: 2026-07-13-idle-frame-wake (timeout dispatch)")
-	for !quit {
+	for {
 		err := wlclient.DisplayDispatchTimeout(disp, framePoll)
 		if err != nil && err != wl.ErrContextRunTimeout && err != wl.ErrContextRunProxyNil {
 			// Always to stderr: exiting the GUI loop is fatal for the app, and
@@ -140,10 +158,11 @@ func Run(fn shirei.FrameFn) {
 		if shirei.FrameRequested() {
 			dirty = true
 		}
-		if dirty && frameCb == nil && !waitConfigure && !quit {
+		if dirty && frameCb == nil && !waitConfigure {
 			drawFrame()
 		}
 	}
+	g.ExitWithCleanup(0)
 }
 
 var h = &handler{}
@@ -220,6 +239,8 @@ func (*handler) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 		bindDataDeviceManager(ev.Name, v)
 	case "zwp_text_input_manager_v3":
 		bindTextInputManager(ev.Name, ev.Version) // IME via text-input-v3
+	case "zwp_linux_dmabuf_v1":
+		bindLinuxDmabuf(ev.Name, ev.Version)
 	}
 }
 
@@ -317,7 +338,7 @@ func (*handler) HandleToplevelConfigure(ev zxdg.ToplevelConfigureEvent) {
 	pendingW, pendingH = int(ev.Width), int(ev.Height)
 }
 
-func (*handler) HandleToplevelClose(zxdg.ToplevelCloseEvent) { quit = true }
+func (*handler) HandleToplevelClose(zxdg.ToplevelCloseEvent) { g.ExitWithCleanup(0) }
 
 // HandleCallbackDone: the compositor finished presenting the last frame (this is
 // vsync). Draw the next one if anything still wants to animate.
@@ -327,7 +348,7 @@ func (*handler) HandleCallbackDone(ev wl.CallbackDoneEvent) {
 		frameCb = nil
 	}
 	wlDebug("frame callback (dirty=%v wantsFrame=%v)", dirty, wantsFrame)
-	if wantsFrame && !quit {
+	if wantsFrame {
 		drawFrame()
 	}
 }
@@ -399,14 +420,21 @@ func (b *wlBuffer) destroy() {
 	b.busy = false
 }
 
-// drawFrame produces one shirei frame, rasterizes it into a free shm buffer, and
+// drawFrame produces one shirei frame, rasterizes it (GLES dmabuf or shm), and
 // presents it; it also arms the next frame callback when animation is wanted.
 func drawFrame() {
-	b := nextBuffer()
-	if b == nil {
-		wlDebug("drawFrame SKIPPED: both buffers busy (mods=%04b)", shirei.GetInputState().Modifiers)
-		dirty = true // both buffers in flight; retry when one is released
-		return
+	var slot *gpuSlot
+	var shm *wlBuffer
+	if gpuOK {
+		slot = nextGPUBuffer()
+	}
+	if slot == nil {
+		shm = nextBuffer()
+		if shm == nil {
+			wlDebug("drawFrame SKIPPED: both buffers busy (mods=%04b)", shirei.GetInputState().Modifiers)
+			dirty = true
+			return
+		}
 	}
 	wlDebug("drawFrame render (mods=%04b)", shirei.GetInputState().Modifiers)
 	dirty = false
@@ -425,10 +453,15 @@ func drawFrame() {
 	// frameFn consumes input. FrameInput is reset at the end of RunFrameFn.
 	injectPendingPaste()
 	flushPendingText()
+	if shirei.GetFrameInput().AccessAction.Kind == 0 {
+		shirei.GetFrameInput().AccessAction = accessBridge.NextAction()
+	}
 
-	t0 := time.Now()
 	out := shirei.RunFrameFn(frameFn)
-	perfRecordProduce(time.Since(t0))
+	accessBridge.Publish(out.Access, out.AccessChanged, shirei.Vec2{float32(logicalW), float32(logicalH)}, shirei.GetHost().WindowFocused)
+	if accessBridge.HasActions() {
+		out.NextFrameRequested = true
+	}
 
 	if csdEnabled {
 		shirei.GetHost().WindowSize[1] = float32(logicalH - titlebarHeight)
@@ -448,15 +481,57 @@ func drawFrame() {
 		openURL(out.OpenURL)
 	}
 
-	t1 := time.Now()
-	softRenderer.RenderInto(b.data, curW*4, curW, curH, scale, out.Surfaces)
+	if havePresented && out.SurfacesHash == lastPresentedHash && curW == presentW && curH == presentH && !hasAck {
+		shirei.EmitFrameMetrics()
+		wantsFrame = out.NextFrameRequested
+		if wantsFrame && frameCb == nil {
+			if cb, err := surface.Frame(); err == nil {
+				frameCb = cb
+				wlclient.CallbackAddListener(frameCb, h)
+			}
+			surface.Commit()
+		}
+		return
+	}
+
+	var presentBuf *wl.Buffer
+	painted := false
+	if slot != nil {
+		err := gpurender.Render(slot.target.Handle(), slot.w, slot.h, scale, out.Surfaces, out.GlyphRuns, out.GlyphsAdded, out.GlyphsEvicted, false)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gpurender: %v; software this frame\n", err)
+			slot = nil
+			if shm == nil {
+				shm = nextBuffer()
+			}
+		} else {
+			presentBuf = slot.buf
+			slot.busy = true
+			painted = true
+		}
+	}
+	if !painted {
+		if shm == nil {
+			wlDebug("drawFrame SKIPPED: software fallback, no shm buffer")
+			dirty = true
+			return
+		}
+		softRenderer.RenderInto(shm.data, curW*4, curW, curH, scale, out.Surfaces, out.GlyphRuns)
+		presentBuf = shm.buf
+		shm.busy = true
+	}
+	t := &shirei.ActiveUI().FrameTimings
+	t.Painted = true
+	t.PaintEnd = time.Now()
+	shirei.EmitFrameMetrics()
+
 	// Ack before the attach: niri keys its resize animation off the acked serial,
 	// and skips it for a new size committed under an older ack.
 	if hasAck {
 		xdgSurface.AckConfigure(ackSerial)
 		hasAck = false
 	}
-	surface.Attach(b.buf, 0, 0)
+	surface.Attach(presentBuf, 0, 0)
 	surface.Damage(0, 0, int32(logicalW), int32(logicalH)) // damage is in surface (logical) coords
 
 	wantsFrame = out.NextFrameRequested
@@ -467,6 +542,7 @@ func drawFrame() {
 		}
 	}
 	surface.Commit()
-	b.busy = true
-	perfRecordPaint(time.Since(t1))
+	lastPresentedHash = out.SurfacesHash
+	presentW, presentH = curW, curH
+	havePresented = true
 }

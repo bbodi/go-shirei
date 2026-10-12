@@ -1,8 +1,7 @@
 # Running Shirei apps on iOS
 
-Shirei is a Go GUI framework with its own software renderer, and an iOS
-app built with it is an ordinary Go program — the same `package main` that
-runs on the desktop. You do not write Swift or Objective-C for the UI: the
+Shirei is a Go GUI framework. An iOS app built with it is an ordinary Go
+program — the same `package main` that runs on the desktop. You do not write Swift or Objective-C for the UI: the
 `shirei_mobilerun` tool cross-compiles your package, links a thin UIKit host, and
 installs the result on the Simulator or a USB iPhone.
 
@@ -173,17 +172,12 @@ Useful flags:
 | `-id`, `-name` | bundle id and display name |
 | `-icon path` | home-screen icon image |
 
-There is also a lower-level script (`./ios-run.sh` in the shirei root, or
-the copy embedded under `cmd/shirei_mobilerun/embed/`) with the same behavior and
-environment variables (`SHIREI_IOS_TEAM`, `SHIREI_IOS_BUNDLE_ID`, …). Prefer
-`shirei_mobilerun` for day-to-day use.
-
 ---
 
 ## 6. What works
 
-- Rendering via the core software renderer at the device’s resolution and
-  scale
+- Rendering via Metal (`CAMetalLayer`) at the device’s resolution and
+  scale; software renderer if Metal init fails
 - Touch: multi-contact `InputState.Touches` plus primary-finger synthesis to
   mouse/scroll with fling (same model as Android; see the main tutorial §6)
 - Soft keyboard via `UITextInput`, basic IME composition, accessory bar
@@ -226,7 +220,7 @@ certs, full adaptive assets, advanced IME polish, etc.
 
 ## 8. How it works, briefly
 
-`shirei_mobilerun` (via the embedded `ios-run.sh`) builds your package with
+`shirei_mobilerun` builds your package with
 `-buildmode=c-archive` against the iOS or Simulator SDK, then links a small
 UIKit host (the one Objective-C file in the system) into an `.app` bundle.
 Simulator builds are ad-hoc signed and installed with `simctl`. Device

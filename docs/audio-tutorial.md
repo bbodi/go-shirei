@@ -286,12 +286,12 @@ audio.WriteWAV("demo.wav", SampleRate, out)
 `examples/piano` wires this into two flags worth copying into any
 sounding app:
 
-- `--wav out.wav [voice]` — render a scale offline, print peak/RMS, write
+- `-wav out.wav [voice]` — render a scale offline, print peak/RMS, write
   the file. A coding session can check levels numerically (no clipping,
   not silent) and even verify pitches from the file (the piano's
   frequencies were confirmed by zero-crossing analysis; low-pass first if
   the voice has noise in it).
-- `--play [voice]` — the same scale through the real device path; the
+- `-play [voice]` — the same scale through the real device path; the
   end-to-end smoke test for the platform layer.
 
 The habit worth forming, same as snapshots: when a sound reaches a state

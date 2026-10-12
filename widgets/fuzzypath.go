@@ -14,7 +14,7 @@ import (
 // fuzzy path picker (not a traditional file browser; see DirectoryBrowse).
 type FuzzyPathFinderAttrs struct {
 	Title string // modal title; zero → from Dirs/Files
-	Width f32   // modal width; zero → 560
+	Width f32    // modal width; zero → 560
 
 	// Dirs / Files select what the scanner includes. Independent flags —
 	// set both for a mixed list. If neither is set, Dirs defaults to true.
@@ -53,6 +53,15 @@ func FuzzyPathFinder(text *string) {
 
 // FuzzyPathFinderExt is FuzzyPathFinder with configuration.
 func FuzzyPathFinderExt(text *string, attrs FuzzyPathFinderAttrs) {
+	fuzzyPathFinder(text, attrs, CurrentColorScheme, ScrollBars)
+}
+
+// FuzzyPathFinderStyled supplies explicit colors for the composite and its stock children.
+func FuzzyPathFinderStyled(text *string, attrs FuzzyPathFinderAttrs, scheme ColorScheme) {
+	fuzzyPathFinder(text, attrs, scheme, scrollBarWithStyle(scheme.ScrollBar))
+}
+
+func fuzzyPathFinder(text *string, attrs FuzzyPathFinderAttrs, scheme ColorScheme, scrollBar ScrollBarFn) {
 	if attrs.Width == 0 {
 		attrs.Width = 560
 	}
@@ -73,6 +82,8 @@ func FuzzyPathFinderExt(text *string, attrs FuzzyPathFinderAttrs) {
 	st := Use[fuzzyPathFinderState]("fuzzy-path-finder")
 
 	Container(Attrs(Row, CrossMid, Gap(8), Expand), func() {
+		NextAccessRole("group")
+		AssignAccess()
 		input := DefaultTextInputAttrs()
 		input.NoAutoFocus = attrs.NoAutoFocus
 		if attrs.MinWidth > 0 {
@@ -80,13 +91,14 @@ func FuzzyPathFinderExt(text *string, attrs FuzzyPathFinderAttrs) {
 		} else {
 			input.MinWidth = 280
 		}
+		focus := scheme.FocusRing
 		if text != nil && *text != "" && attrs.Dirs && !attrs.Files && !pathIsDir(*text) {
-			input.Accent = Vec4{5, 70, 50, 1}
+			focus = scheme.List.Error
 		}
 		Container(Attrs(Expand), func() {
-			TextInputExt(text, input)
+			TextInputStyled(text, input, scheme.TextInput, focus)
 		})
-		if CtrlButton(NoIcon, "Find…", true) {
+		if ButtonStyled("Find…", ButtonAttrs{}, DefaultCtrlButtonLook(), scheme.Buttons.Default, scheme.FocusRing) {
 			st.active = true
 			st.query = ""
 			st.root = resolveFuzzyRoot(attrs.Root)
@@ -102,12 +114,12 @@ func FuzzyPathFinderExt(text *string, attrs FuzzyPathFinderAttrs) {
 		*st = fuzzyPathFinderState{}
 	}
 
-	Modal(attrs.Width, closeDialog, func() {
-		Label(attrs.Title, FontSize(13), FontWeight(WeightBold), TextColor(220, 25, 25, 1))
+	ModalStyled(attrs.Width, closeDialog, ModalStyleForScheme(scheme), func() {
+		Label(attrs.Title, FontSize(13), FontWeight(WeightBold), TextColorVec(scheme.List.Surface.Text))
 
 		indexed, ready, scanErr := fuzzyIndexSnapshot(st.root)
 		picked := ""
-		accepted := FileSelector(FileSelectorAttrs{
+		accepted := fileSelector(FileSelectorAttrs{
 			Selection:  &picked,
 			Query:      &st.query,
 			Candidates: indexed,
@@ -116,7 +128,7 @@ func FuzzyPathFinderExt(text *string, attrs FuzzyPathFinderAttrs) {
 			Hint: func(matchCount int) string {
 				return fuzzyHint(st.query, st.root, indexed, matchCount, ready, scanErr, attrs)
 			},
-		})
+		}, scheme, scrollBar)
 
 		if accepted {
 			if text != nil && picked != "" {
@@ -129,7 +141,7 @@ func FuzzyPathFinderExt(text *string, attrs FuzzyPathFinderAttrs) {
 			return
 		}
 
-		if Button(NoIcon, "Cancel") {
+		if ButtonStyled("Cancel", ButtonAttrs{}, DefaultButtonLook(), scheme.Buttons.Default, scheme.FocusRing) {
 			closeDialog()
 		}
 	})

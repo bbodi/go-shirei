@@ -125,6 +125,7 @@ func handleQuickOpen() {
 
 func RootView() {
 	ProfileButton("image-viewer")
+	FPSCounter()
 
 	handleQuickOpen()
 

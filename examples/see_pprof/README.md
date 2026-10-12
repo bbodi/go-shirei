@@ -19,7 +19,7 @@ Select a profile for:
 - Shared search filter across table and flame
 - Caller/callee **Peek** (who calls this, what it calls) without leaving the window
 
-No browser tab, no local HTTP server. With `DEBUG=1`, a floating
+No browser tab, no local HTTP server. With `SHIREI_PPROF=1`, a floating
 `ProfileButton` can capture a CPU profile of this app (or any other shirei app
 that embeds the same widget) and drop a `.pprof` next to you to open.
 
@@ -57,20 +57,17 @@ Children get horizontal slices of the parent’s width proportional to `Value`.
 Tooltips use `ClickThrough` so they draw on top without eating clicks
 (`FlameGraph` in `main.go`).
 
-## State scoped to the tree
+## Per-file view
 
-Pan / zoom / focus live in a `FlameState` created with `UseWithInit`, inside a
-container keyed by `flameRoot`. Selecting another profile changes the key, so
-the state is recreated instead of leaking onto a different tree.
+Zoom, pan, focus, selection, peek, table sort, and table scroll live in a
+`FlameState` stored with `UseData`, keyed by filename. Switching profiles and
+coming back restores that view. Focus is a name path from the root — the flame tree is rebuilt on
+each select, so a node pointer would not survive. The search filter, sidebar
+width, and split ratio are window-level and shared across files.
 
 ```go
 // main.go — MainContent
-ContainerWithKey(appData.flameRoot, Attrs(Grow(1), Expand, Clip), func() {
-    state := UseWithInit[FlameState]("flame-state", func() *FlameState {
-        return &FlameState{scale: 1}
-    })
-    // table above, flame below (shared search / selection via state)
-})
+state := fileView(appData.selected) // UseData, keyed by filename
 ```
 
 ## Other pieces
@@ -87,5 +84,5 @@ ContainerWithKey(appData.flameRoot, Attrs(Grow(1), Expand, Clip), func() {
 ```shell
 go run .                 # inside examples/see_pprof; watches cwd
 go run . --png out.png   # uses newest .pprof if present
-DEBUG=1 go run .         # also shows the in-app profiler toggle
+SHIREI_PPROF=1 go run .  # also shows the in-app profiler toggle
 ```

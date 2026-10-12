@@ -7,13 +7,14 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cli/browser v1.3.0
 	github.com/dboslee/lru v0.0.1
-	github.com/ebitengine/purego v0.10.1
+	github.com/ebitengine/purego v0.11.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-text/typesetting v0.3.4
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/jezek/xgb v1.1.1
-	go.hasen.dev/generic v0.1.7
+	go.hasen.dev/generic v0.1.8
 	go.hasen.dev/textsearch v0.2.0
+	go.hasen.dev/udplib v0.1.0
 	golang.org/x/image v0.43.0
 	golang.org/x/sys v0.46.0
 	golang.org/x/text v0.38.0

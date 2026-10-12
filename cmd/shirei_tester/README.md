@@ -16,20 +16,29 @@ go install go.hasen.dev/shirei/cmd/shirei_tester@latest
 
 1. **Discovers** packages under the scan root (`go.mod` / `go.work`) by
    walking the filesystem for `*_test.go` that mention `TestSnapshot`,
-   `ReportSnap`, or `layoutSnapshot` (no `go list`, no goldens on
-   disk). Discovery runs in the background so the window opens immediately.
+   `ReportSnap`, `layoutSnapshot`, or `drive.Start` (no `go list`, no
+   goldens on disk). Nested modules (their own `go.mod`, e.g.
+   `examples/ferry`) are included. Discovery runs in the background so
+   the window opens immediately.
 2. **Lists** every `Test*` by parsing `*_test.go` sources (no compile).
+   Drive-only packages list tests from files that call `drive.Start`.
 3. **Runs** all / package / single test with `go test -json` and
-   `SHIREI_SNAP_REPORT` when the harness supports it.
+   `SHIREI_SNAP_REPORT` when the harness supports it. Drive tests also
+   get `SHIREI_DRIVE_TRACE`. Run all skips drive-only packages (they
+   open windows); run a drive test or package explicitly.
 4. **Shows** a wipe compare (actual vs golden, with diff highlight) and
    **Accept** when the report includes paths; otherwise you still get
-   pass/fail and log output.
+   pass/fail and log output. **All diffs** lists every mismatch on one
+   screen, each with the wipe slider and Accept, so many can be reviewed
+   without stepping Next fail. A drive test shows a filmstrip of
+   `drive.Shot` beats and the UDP commands between them.
 
 ## Harness report (optional)
 
 | Env | Meaning |
 |-----|---------|
 | `SHIREI_SNAP_REPORT` | Append-only JSONL path (`shirei.SnapEvent`) |
+| `SHIREI_DRIVE_TRACE` | Directory for drive JSONL + PNGs (`drive.Shot`). Tester sets a temp dir per run and removes those dirs on exit. |
 | `UPDATE_SNAPSHOTS=1` | Rewrite goldens (still reported as `updated`) |
 
 Event shape (one JSON object per line):

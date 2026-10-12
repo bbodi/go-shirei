@@ -1,5 +1,7 @@
 package shirei
 
+import "unsafe"
+
 // AttrsFn is a single attribute setter. The Attrs and AttrsWith builders take a
 // list of these (Row, Pad(8), Gap(6), ...) and apply them in order; this is the
 // blessed way to specify container attributes.
@@ -13,12 +15,12 @@ type AttrsFn func(*AttrSet)
 type AnimFlags uint16
 
 const (
-	AnimSize AnimFlags = 1 << iota // resolved size
-	AnimPos                        // relative origin (layout / float position)
-	AnimPad                        // padding
-	AnimCorners                    // corner radii
-	AnimBorder                     // border width
-	AnimAlpha                      // Transparency (not Background alpha)
+	AnimSize    AnimFlags = 1 << iota // resolved size
+	AnimPos                           // relative origin (layout / float position)
+	AnimPad                           // padding
+	AnimCorners                       // corner radii
+	AnimBorder                        // border width
+	AnimAlpha                         // Transparency (not Background alpha)
 	// leave room for AnimColor etc.
 
 	// AnimAll enables every channel. Named bits cover the channels the apply
@@ -36,8 +38,9 @@ const (
 // to pin the mask; call NoClip to opt out of clipping.
 func Attrs(fns ...AttrsFn) AttrSet {
 	a := AttrSet{Clip: true, Animations: AnimAll} // unset: cascade may still &= parent
+	p := (*AttrSet)(noescape(unsafe.Pointer(&a))) // keep a on the stack; setters must not retain p
 	for _, f := range fns {
-		f(&a)
+		f(p)
 	}
 	return a
 }
@@ -46,8 +49,9 @@ func Attrs(fns ...AttrsFn) AttrSet {
 // Does not re-apply defaults — base is used as-is (so a zero Animations on
 // base stays "animate nothing").
 func AttrsWith(a AttrSet, fns ...AttrsFn) AttrSet {
+	p := (*AttrSet)(noescape(unsafe.Pointer(&a)))
 	for _, f := range fns {
-		f(&a)
+		f(p)
 	}
 	return a
 }
@@ -460,6 +464,14 @@ func FocusTrap(a *AttrSet) {
 	a.FocusTrap = true
 }
 
+// TabAfter orders this container's focusable subtree immediately after id
+// in the tab ring. Layout parentage is unchanged. Nil id is a no-op.
+func TabAfter(id ContainerId) AttrsFn {
+	return func(a *AttrSet) {
+		a.TabAfter = id
+	}
+}
+
 // Corners sets a uniform border radius on all four corners.
 func Corners(v float32) AttrsFn {
 	return func(a *AttrSet) {
@@ -511,17 +523,20 @@ func TextStyle(mods ...TextStyleFn) TextStyleAttrs {
 	return TextStyleWith(ui.current.TextStyle, mods...)
 }
 
-// AmendTextStyle inherits the text style from the parent container while
-// applying modifications to it.
+// AmendTextStyle modifies the pending text style, inheriting the current
+// container's style when unset. Setters compose in order in Attrs, AttrsWith,
+// and ModAttrs; font-only changes preserve earlier color choices.
 //
-// Expected to be called inside `Attrs(...)` while building a new container
-//
-//	Container(Attrs(AmendTextStyle(FontSize(20), ...), func() {
+//	Container(Attrs(AmendTextStyle(FontSize(20))), func() {
 //		// content
 //	})
 func AmendTextStyle(mods ...TextStyleFn) AttrsFn {
 	return func(a *AttrSet) {
-		a.TextStyle = TextStyleWith(ui.current.TextStyle, mods...)
+		base := a.TextStyle
+		if base == (TextStyleAttrs{}) {
+			base = ui.current.TextStyle
+		}
+		a.TextStyle = TextStyleWith(base, mods...)
 	}
 }
 
@@ -573,9 +588,15 @@ func FontSize(h float32) TextStyleFn {
 }
 
 // Fonts sets preferred font families, tried in order ahead of the defaults.
+// The combined list is interned; repeating Fonts(Monospace...) shares one
+// canonical list rather than allocating a fresh slice each call.
 func Fonts(fs ...string) TextStyleFn {
 	return func(st *TextStyleAttrs) {
-		st.FontFamilies = append(fs, st.FontFamilies...)
+		var rest []string
+		if st.fontFamilies != nil {
+			rest = st.fontFamilies.names
+		}
+		st.fontFamilies = internFamilyList(fs, rest)
 	}
 }
 

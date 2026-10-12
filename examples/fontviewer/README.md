@@ -86,6 +86,5 @@ go run . -png out.png -limit-families=20
 
 ```shell
 go run .                 # inside examples/fontviewer
-go run . --png out.png   # legacy form still works
 go run . -png out.png
 ```

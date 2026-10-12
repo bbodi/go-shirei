@@ -1,10 +1,10 @@
 # Running Shirei apps on Android
 
-Shirei is a Go GUI framework with its own software renderer, and an Android
-app built with it is an ordinary Go program — the same `package main` that
-runs on the desktop. There is no Android Studio, no Gradle, no Kotlin, and
-you never write Java: the `shirei_mobilerun` tool cross-compiles your package with
-the NDK and assembles a ready-to-install APK from it.
+Shirei is a Go GUI framework, and an Android app built with it is an ordinary
+Go program — the same `package main` that runs on the desktop. There is no
+Android Studio, no Gradle, no Kotlin, and you never write Java: the
+`shirei_mobilerun` tool cross-compiles your package with the NDK and assembles
+a ready-to-install APK from it.
 
 **Development and release.** `shirei_mobilerun` iterates on a connected device
 or emulator with debug signing, debuggable APKs, and ad-hoc app ids. For release
@@ -335,8 +335,9 @@ If step 5 fails, the log line above the error usually names the missing tool
 
 ## 6. What works
 
-- Rendering via the core software renderer, at the device's native
-  resolution and density scale.
+- Rendering via GLES (`gpurender`) at the device's native resolution and
+  density scale; `SHIREI_GPU=0` or EGL init failure falls back to the
+  software renderer.
 - Touch: every finger fills `InputState.Touches` (multi-contact data + hit
   queries such as `IsTouched`); the primary finger also synthesizes mouse and
   scroll with fling so mouse-oriented UIs work unmodified. Built-in multi-finger

@@ -246,7 +246,7 @@ func frameFn() {
 	Container(Attrs(Grow(1), Expand, Extrinsic, Viewport,
 		Background(0, 0, 100, 1), Corners(4), BorderWidth(1), BorderColor(0, 0, 78, 1), Pad(6)), func() {
 		attrs := DefaultTextStyle()
-		attrs.FontFamilies = Monospace
+		attrs.SetFontFamilies(Monospace...)
 		attrs.FontSize = 12
 		if mode.Drive {
 			LogViewExt(ring, attrs, listKey, &probe)

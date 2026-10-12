@@ -164,6 +164,7 @@ func CompareImage(name, goldenPath string, img *image.RGBA) SnapResult {
 // reason.
 func Snapshot(testName, name string, w, h int, fn FrameFn) SnapResult {
 	InitFontSubsystem()
+	WaitForSystemFontScan() // test-only; apps must not wait on the font scan
 	shaped := ShapeText("alpha", DefaultTextStyle())
 	if len(shaped.Lines) != 1 || len(shaped.Lines[0].Segments) == 0 {
 		r := SnapResult{Name: name, Status: SnapSkip, Reason: "no usable system fonts for text shaping"}

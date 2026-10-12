@@ -1,9 +1,9 @@
 //go:build ios
 
 // Package iosbackend is a direct-iOS (UIKit) backend for shirei. UIKit provides
-// the window, run loop, and touch input; all rasterization is done by shirei's
-// core software renderer, which rasterizes each frame into a BGRA buffer that is
-// presented via CALayer.contents.
+// the window, run loop, and touch input. Metal (shirei/gpurender) is the default
+// compositor into a CAMetalLayer drawable; SoftRenderer + CALayer.contents is
+// the fallback if Metal init fails.
 //
 // Input: multi-touch fills InputState.Touches (+ FrameInput began/ended).
 // Independently, the primary finger is synthesized into mouse + wheel
@@ -25,14 +25,18 @@ package iosbackend
 import "C"
 
 import (
+	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 	"unsafe"
 
+	"go.hasen.dev/generic"
 	"go.hasen.dev/shirei"
+	"go.hasen.dev/shirei/gpurender"
 )
 
 // glyphCacheBudget caps total cached glyph-bitmap bytes (enables the shared core
@@ -99,6 +103,9 @@ var (
 	frameFn shirei.FrameFn
 
 	softRenderer shirei.SoftRenderer
+
+	// gpuOK is set once at Run if Metal init succeeds.
+	gpuOK bool
 
 	// present skip: hash of last presented surfaces
 	lastPresentedHash  uint64
@@ -183,7 +190,20 @@ func Run(fn shirei.FrameFn) {
 	// first geometry request are landscape/portrait from the start (avoids a
 	// one-frame flash of the device's natural orientation).
 	C.ios_syncOrientation(C.int(shirei.GetHost().PreferredOrientation))
+	if err := gpurender.Init(); err != nil {
+		fmt.Fprintf(os.Stderr, "gpurender: fallback to software: %v\n", err)
+	} else {
+		gpuOK = true
+		C.ios_set_metal(1)
+	}
 	C.ios_attach()
+}
+
+//export shireiExitWithCleanup
+func shireiExitWithCleanup() {
+	// UIApplicationMain owns the process; ios_attach observes
+	// UIApplicationWillTerminate and calls this so AddExitCleanup runs.
+	generic.ExitWithCleanup(0)
 }
 
 //export shireiFrameRequested
@@ -849,25 +869,40 @@ func shireiProduceAndPresent(w, h C.double) {
 	}
 
 	// Skip only when content and pixel size both match. A size change must
-	// always re-upload: CALayer keeps the previous CGImage until replaced, and
-	// a bounds change without a new buffer is the one-frame "shrink" glitch.
+	// always redraw: the last CGImage/drawable stays on the layer until replaced.
 	sameHash := havePresented && out.SurfacesHash == lastPresentedHash
 	samePx := havePresented && dw == presentW && dh == presentH
 	if sameHash && samePx {
+		shirei.EmitFrameMetrics()
 		return
 	}
 
-	stride := dw * 4
-	bufBytes := stride * dh
-	// Soft renderer uses WindowSize for the scene; surfaces sit in the top
-	// layoutH band of this full-safe-area buffer. If layoutH < drawH there is
-	// a black band (keyboard path); if they match, the buffer is fully used.
-	buf := make([]byte, bufBytes) // zeroed: black below the layout band
-	softRenderer.RenderInto(buf, stride, dw, dh, scale, out.Surfaces)
-	C.ios_present_bgra(unsafe.Pointer(&buf[0]), C.int(stride), C.int(dw), C.int(dh))
+	if gpuOK {
+		layer := C.ios_metal_layer()
+		if layer == nil {
+			return
+		}
+		if err := gpurender.Render(unsafe.Pointer(layer), dw, dh, scale, out.Surfaces, out.GlyphRuns, out.GlyphsAdded, out.GlyphsEvicted, false); err != nil {
+			fmt.Fprintf(os.Stderr, "gpurender: %v\n", err)
+			return
+		}
+	} else {
+		stride := dw * 4
+		bufBytes := stride * dh
+		// Soft renderer uses WindowSize for the scene; surfaces sit in the top
+		// layoutH band of this full-safe-area buffer. If layoutH < drawH there is
+		// a black band (keyboard path); if they match, the buffer is fully used.
+		buf := make([]byte, bufBytes) // zeroed: black below the layout band
+		softRenderer.RenderInto(buf, stride, dw, dh, scale, out.Surfaces, out.GlyphRuns)
+		C.ios_present_bgra(unsafe.Pointer(&buf[0]), C.int(stride), C.int(dw), C.int(dh))
+	}
 
 	lastPresentedHash = out.SurfacesHash
 	presentW, presentH, havePresented = dw, dh, true
+	t := &shirei.ActiveUI().FrameTimings
+	t.Painted = true
+	t.PaintEnd = time.Now()
+	shirei.EmitFrameMetrics()
 }
 
 func setClipboard(s string) {

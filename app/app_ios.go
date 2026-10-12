@@ -13,8 +13,12 @@ import (
 // SetupWindow records the window's title and preferred size. On iOS the view is
 // full-screen (safe-area); size is accepted for API parity with desktop.
 func SetupWindow(title string, width, height int) {
+	shirei.GetHost().WindowSize = shirei.Vec2{float32(width), float32(height)}
 	iosbackend.SetupWindow(title, width, height)
 }
+
+// SetupQuiet is a no-op on iOS.
+func SetupQuiet() {}
 
 // SetupIcon is a no-op on iOS for the spike (bundle icon comes from the host
 // app's Assets/Info.plist).
@@ -29,8 +33,9 @@ func SetupIconBytes(data []byte) {
 }
 
 // Run attaches the UIKit content view and returns; CADisplayLink drives frames
-// afterward. Must be called on the main goroutine after UIApplicationMain has
-// started (ios-run.sh / ioshost arrange this via shirei_ios_run).
+// afterward. UIApplicationWillTerminate calls generic.ExitWithCleanup.
+// Must be called on the main goroutine after UIApplicationMain has started
+// (shirei_mobilerun / ioshost arrange this via shirei_ios_run).
 func Run(frameFn shirei.FrameFn) {
 	iosbackend.Run(frameFn)
 }

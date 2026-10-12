@@ -69,12 +69,18 @@ func RootView() {
 		Container(Attrs(Row, Gap(10), CrossMid), func() {
 			if Button(NoIcon, "300 × 200") {
 				minW, minH = 300, 200
+				window.SetMinSize(minW, minH)
+				window.SetSize(minW, minH)
 			}
 			if Button(NoIcon, "400 × 300") {
 				minW, minH = 400, 300
+				window.SetMinSize(minW, minH)
+				window.SetSize(minW, minH)
 			}
 			if Button(NoIcon, "500 × 400") {
 				minW, minH = 500, 400
+				window.SetMinSize(minW, minH)
+				window.SetSize(minW, minH)
 			}
 		})
 
@@ -82,15 +88,23 @@ func RootView() {
 		Container(Attrs(Row, Gap(10), CrossMid), func() {
 			if Button(SymIMinus, "Width -50") && minW > 150 {
 				minW -= 50
+				window.SetMinSize(minW, minH)
+				window.SetSize(max(ws[0]-50, minW), ws[1])
 			}
 			if Button(SymIPlus, "Width +50") {
 				minW += 50
+				window.SetMinSize(minW, minH)
+				window.SetSize(max(ws[0]+50, minW), ws[1])
 			}
 			if Button(SymIMinus, "Height -50") && minH > 150 {
 				minH -= 50
+				window.SetMinSize(minW, minH)
+				window.SetSize(ws[0], max(ws[1]-50, minH))
 			}
 			if Button(SymIPlus, "Height +50") {
 				minH += 50
+				window.SetMinSize(minW, minH)
+				window.SetSize(ws[0], max(ws[1]+50, minH))
 			}
 		})
 

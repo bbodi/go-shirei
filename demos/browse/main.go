@@ -53,10 +53,10 @@ type picsumPhoto struct {
 }
 
 type postsState struct {
-	mu      sync.Mutex
-	loading bool
-	err     string
-	items   []hnItem
+	mu       sync.Mutex
+	loading  bool
+	err      string
+	items    []hnItem
 	expanded int // story id, 0 = none
 }
 
@@ -81,11 +81,11 @@ var (
 )
 
 const (
-	hnTopN       = 40
-	picsumLimit  = 24
-	userAgent    = "shirei-browse-demo/1.0 (+https://go.hasen.dev/shirei)"
-	imageThumbW  = 400
-	imageThumbH  = 280
+	hnTopN      = 40
+	picsumLimit = 24
+	userAgent   = "shirei-browse-demo/1.0 (+https://go.hasen.dev/shirei)"
+	imageThumbW = 400
+	imageThumbH = 280
 )
 
 func main() {
@@ -105,10 +105,10 @@ func RootView() {
 			Label("HN posts · Picsum images — free public APIs, no login",
 				FontSize(11), TextColor(0, 0, 45, 1))
 			Container(Attrs(Row, CrossMid, Gap(10), Expand), func() {
-				SegmentedControl(&tab,
-					Cell("Posts", tabPosts),
-					Cell("Images", tabImages),
-				)
+				SegmentedControl(&tab, func() {
+					SegmentedCell("Posts", tabPosts)
+					SegmentedCell("Images", tabImages)
+				})
 				Filler(1)
 				if CtrlButton(NoIcon, "Refresh", true) {
 					switch tab {

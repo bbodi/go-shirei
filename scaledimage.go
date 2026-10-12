@@ -85,7 +85,16 @@ type scaledResult struct {
 type scaleMotion struct {
 	dw, dh int
 	at     time.Time
+	cheap  bool // last resample used the motion filter
 }
+
+type scalePhase int
+
+const (
+	scaleIdle scalePhase = iota
+	scaleChanged
+	scaleWaiting
+)
 
 // dropScaledForImage removes cached resamples for a reclaimed ImageId.
 func dropScaledForImage(id ImageId) {
@@ -109,29 +118,38 @@ func quantizeDim(v, step int) int {
 	return q
 }
 
-// noteScaleMotion updates per-id size history and reports whether we are still
-// inside the motion (cheap-scale) window. First sighting of an id is not motion
-// — only a change away from a previously seen size starts the idle timer.
-func noteScaleMotion(id ImageId, dw, dh int) bool {
-	if ScaleMotionIdle <= 0 {
-		return false
-	}
-	if ui != nil && ui.Host.HeadlessRender {
-		// Snapshots / PNG must be deterministic quality.
-		return false
+// resolveScaleSize picks the device size to resample to and whether this
+// paint is a live resize, the post-resize wait for idle quality, or idle.
+//
+// A 1px flip-flop (subpixel layout of a 16px icon) is not motion — it is
+// locked to the last committed size. Treating it as motion used to bump
+// ImageData.Generation and RequestNextFrame on every paint, which kept
+// SurfacesHash changing and the display link at 60fps.
+func resolveScaleSize(id ImageId, dw, dh int) (outW, outH int, phase scalePhase) {
+	if ScaleMotionIdle <= 0 || (ui != nil && ui.Host.HeadlessRender) {
+		return dw, dh, scaleIdle
 	}
 	now := time.Now()
 	m, ok := res.scaleMotionById[id]
 	if !ok {
-		// Stable baseline; backdate so the idle check passes immediately.
 		res.scaleMotionById[id] = scaleMotion{dw: dw, dh: dh, at: now.Add(-ScaleMotionIdle)}
-		return false
+		return dw, dh, scaleIdle
 	}
-	if m.dw != dw || m.dh != dh {
-		res.scaleMotionById[id] = scaleMotion{dw: dw, dh: dh, at: now}
-		return true
+	if absInt(m.dw-dw) <= 1 && absInt(m.dh-dh) <= 1 {
+		if m.cheap && now.Sub(m.at) < ScaleMotionIdle {
+			return m.dw, m.dh, scaleWaiting
+		}
+		return m.dw, m.dh, scaleIdle
 	}
-	return now.Sub(m.at) < ScaleMotionIdle
+	res.scaleMotionById[id] = scaleMotion{dw: dw, dh: dh, at: now, cheap: true}
+	return dw, dh, scaleChanged
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func sourceImageOpaque(id ImageId, src *image.RGBA, base uintptr) bool {
@@ -167,22 +185,36 @@ func scaledImage(id ImageId, src *image.RGBA, dw, dh int) scaledResult {
 	base := uintptr(unsafe.Pointer(&src.Pix[0]))
 	order := pixelOrder()
 	opaque := sourceImageOpaque(id, src, base)
+	sw, sh := src.Bounds().Dx(), src.Bounds().Dy()
 
-	moving := noteScaleMotion(id, dw, dh)
-	scaleDw, scaleDh := dw, dh
-	if moving && ScaleMotionQuantize > 0 {
-		scaleDw = quantizeDim(dw, ScaleMotionQuantize)
-		scaleDh = quantizeDim(dh, ScaleMotionQuantize)
+	// Pre-scaled bitmaps (icons at logical×WindowScale) hit here: pixel-order
+	// cache only. A 1px dest jitter is still 1:1 — not a resize, not motion.
+	if absInt(dw-sw) <= 1 && absInt(dh-sh) <= 1 {
+		return orderedImage(id, src, sw, sh, base, order, opaque)
 	}
 
+	// This dest size already has an idle-quality entry. Painting the same
+	// image at another stable size must not look like a live resize.
+	idleKey := scaledKey{id, dw, dh, order, ScaleIdleFilter.Support, ScaleIdleFilter.Fn == nil}
+	if e, ok := res.scaledImageCache[idleKey]; ok && e.srcBase == base && e.srcLen == len(src.Pix) {
+		return scaledResult{img: e.img, opaque: e.opaque}
+	}
+
+	scaleDw, scaleDh, phase := resolveScaleSize(id, dw, dh)
+	if phase == scaleChanged && ScaleMotionQuantize > 0 {
+		scaleDw = quantizeDim(scaleDw, ScaleMotionQuantize)
+		scaleDh = quantizeDim(scaleDh, ScaleMotionQuantize)
+	}
+
+	moving := phase == scaleChanged || phase == scaleWaiting
 	filter := ScaleIdleFilter
 	if moving {
 		filter = ScaleMotionFilter
 	}
 	key := scaledKey{id, scaleDw, scaleDh, order, filter.Support, filter.Fn == nil}
 	if e, ok := res.scaledImageCache[key]; ok && e.srcBase == base && e.srcLen == len(src.Pix) {
-		if moving {
-			bumpImageGeneration(id)
+		if phase == scaleWaiting {
+			// Size is locked; tick until the idle-quality upgrade.
 			RequestNextFrame()
 		}
 		if scaleDw == dw && scaleDh == dh {
@@ -206,10 +238,16 @@ func scaledImage(id ImageId, src *image.RGBA, dw, dh int) scaledResult {
 		img: out, opaque: opaque, srcBase: base, srcLen: len(src.Pix),
 	}
 
-	if moving {
-		// Same Surface list next frame would present-skip; bump Generation so
-		// SurfacesHash moves and the idle quality pass actually paints.
-		bumpImageGeneration(id)
+	if phase == scaleIdle {
+		// First exact-size linear after a cheap pass: one Generation bump so
+		// present-skip cannot keep the nearest-neighbor pixels.
+		if m, ok := res.scaleMotionById[id]; ok && m.cheap {
+			m.cheap = false
+			res.scaleMotionById[id] = m
+			bumpImageGeneration(id)
+			RequestNextFrame()
+		}
+	} else if phase == scaleWaiting {
 		RequestNextFrame()
 	}
 
@@ -217,6 +255,22 @@ func scaledImage(id ImageId, src *image.RGBA, dw, dh int) scaledResult {
 		return scaledResult{img: out, opaque: opaque}
 	}
 	return scaledResult{img: nearestStretchRGBA(out, dw, dh), opaque: opaque}
+}
+
+// orderedImage is the 1:1 path: source pixels copied into Host.PixelOrder.
+func orderedImage(id ImageId, src *image.RGBA, dw, dh int, base uintptr, order [4]uint8, opaque bool) scaledResult {
+	key := scaledKey{id, dw, dh, order, 0, true}
+	if e, ok := res.scaledImageCache[key]; ok && e.srcBase == base && e.srcLen == len(src.Pix) {
+		return scaledResult{img: e.img, opaque: e.opaque}
+	}
+	if len(res.scaledImageCache) >= scaledCacheCap {
+		res.scaledImageCache = map[scaledKey]*scaledEntry{}
+	}
+	out := applyPixelOrderRGBA(src, order)
+	res.scaledImageCache[key] = &scaledEntry{
+		img: out, opaque: opaque, srcBase: base, srcLen: len(src.Pix),
+	}
+	return scaledResult{img: out, opaque: opaque}
 }
 
 func bumpImageGeneration(id ImageId) {

@@ -163,6 +163,7 @@ type clipCorners struct {
 // One per window/consumer; not safe for concurrent use (neither is a frame).
 type SoftRenderer struct {
 	fb        Framebuffer
+	glyphRuns []GlyphRun // GlyphRunFirst/Count index into this for the current paint
 	scale     float32
 	clip      clipState
 	clipStack []clipState
@@ -230,21 +231,24 @@ var defaultRenderer SoftRenderer
 func RenderToBuffer(surfaces []Surface, scale float32) *Framebuffer {
 	devW := int(Roundf32(ui.Host.WindowSize[0] * scale))
 	devH := int(Roundf32(ui.Host.WindowSize[1] * scale))
-	return defaultRenderer.Render(surfaces, devW, devH, scale)
+	return defaultRenderer.Render(surfaces, ui.glyphRuns, devW, devH, scale)
 }
 
 // Render rasterizes the surface list into the renderer's own (reused) framebuffer
 // at the given device dimensions and scale (device pixels per logical point), and
 // returns it.
-func (r *SoftRenderer) Render(surfaces []Surface, devW, devH int, scale float32) *Framebuffer {
+func (r *SoftRenderer) Render(surfaces []Surface, runs []GlyphRun, devW, devH int, scale float32) *Framebuffer {
 	t0 := time.Now()
 	if ui != nil {
 		ui.Host.ImageScaleTime = 0
 	}
+	r.glyphRuns = runs
 	r.fb.ensure(devW, devH)
 	r.renderSurfaces(surfaces, scale)
 	if ui != nil {
 		ui.Host.PaintTime = time.Since(t0)
+		ui.Host.PaintGPU = false
+		ui.Host.PaintGen++
 	}
 	return &r.fb
 }
@@ -253,15 +257,18 @@ func (r *SoftRenderer) Render(surfaces []Surface, devW, devH int, scale float32)
 // own — e.g. an IOSurface / DIB section / shm region that the backend presents
 // zero-copy. dst must be at least stride*devH bytes; stride is bytes per row and
 // may exceed devW*4 (row padding/alignment is honored).
-func (r *SoftRenderer) RenderInto(dst []byte, stride, devW, devH int, scale float32, surfaces []Surface) {
+func (r *SoftRenderer) RenderInto(dst []byte, stride, devW, devH int, scale float32, surfaces []Surface, runs []GlyphRun) {
 	t0 := time.Now()
 	if ui != nil {
 		ui.Host.ImageScaleTime = 0
 	}
+	r.glyphRuns = runs
 	r.fb.W, r.fb.H, r.fb.Stride, r.fb.Pix = devW, devH, stride, dst
 	r.renderSurfaces(surfaces, scale)
 	if ui != nil {
 		ui.Host.PaintTime = time.Since(t0)
+		ui.Host.PaintGPU = false
+		ui.Host.PaintGen++
 	}
 }
 
@@ -270,6 +277,13 @@ func (r *SoftRenderer) RenderInto(dst []byte, stride, devW, devH int, scale floa
 func (r *SoftRenderer) RegionStats() RegionStats { return r.regions.fetchStats() }
 
 func (r *SoftRenderer) renderSurfaces(surfaces []Surface, scale float32) {
+	if r.scale != scale {
+		// Region bitmaps contain device pixels; logical surface hashes do not
+		// change when a window moves to a display with a different scale.
+		clear(r.regions.entries)
+		clear(r.regions.prevHashes)
+		clear(r.regions.curHashes)
+	}
 	r.scale = scale
 	r.devOrigin = image.Point{} // the main render is always at the buffer origin
 	// The white canvas is only needed where nothing paints over it. If the backmost
@@ -345,7 +359,7 @@ func (r *SoftRenderer) renderOne(s *Surface) {
 // painting it overwrites every pixel and the white clear can be skipped. Called
 // only for the backmost surface, where no clip or group transparency is in effect.
 func (r *SoftRenderer) coversViewportOpaque(s *Surface) bool {
-	if s.Stroke != 0 || s.ImageId != 0 || s.GlyphId != 0 || s.Transparency != 0 {
+	if s.Stroke != 0 || s.ImageId != 0 || s.GlyphId != 0 || s.GlyphRunCount != 0 || s.Transparency != 0 {
 		return false
 	}
 	if s.Corners != (Vec4{}) || s.Color1[3] < 1 || s.Color2[3] < 1 {
@@ -377,6 +391,8 @@ func (r *SoftRenderer) visible(s *Surface) bool {
 // always emits one.
 func SurfacePaints(s *Surface) bool {
 	switch {
+	case s.GlyphRunCount > 0:
+		return true
 	case s.FontId > 0 && s.GlyphId > 0: // glyph
 		return true
 	case s.ImageId > 0: // image
@@ -391,6 +407,10 @@ func SurfacePaints(s *Surface) bool {
 }
 
 func (r *SoftRenderer) drawContent(s *Surface) {
+	if s.GlyphRunCount > 0 {
+		r.drawGlyphRun(s)
+		return
+	}
 	switch {
 	case s.FontId > 0 && s.GlyphId > 0:
 		r.drawGlyph(s)
@@ -631,6 +651,23 @@ func (r *SoftRenderer) drawBorder(s *Surface) {
 //  Glyphs & images
 // -----------------------------------------------------------------------------
 
+func (r *SoftRenderer) drawGlyphRun(s *Surface) {
+	n := int(s.GlyphRunCount)
+	var tmp Surface
+	for i := 0; i < n; i++ {
+		g := s.GlyphRunAt(i, r.glyphRuns)
+		tmp = Surface{
+			Rect:        g.Rect,
+			Color1:      g.Color,
+			Color2:      g.Color,
+			FontId:      g.FontId,
+			GlyphId:     g.GlyphId,
+			GlyphOffset: g.GlyphOffset,
+		}
+		r.drawGlyph(&tmp)
+	}
+}
+
 // drawGlyph composites a cached glyph stamp (glyphcache.go). Outline glyphs are
 // an alpha mask tinted with the text color (Color1). Color-bitmap glyphs are a
 // precolored RGBA stamp and are not tinted. Placement: baseline ~0.82 down from
@@ -662,8 +699,8 @@ func (r *SoftRenderer) drawGlyph(s *Surface) {
 }
 
 // drawImage paints an image surface (a loaded image, or a generated shadow).
-// Container images set ImageScale (fit to the surface height, like the cocoa/gio
-// backends); shadows draw at natural size. Scaling goes through scaledImage
+// Container images set ImageScale (fit to the surface height). Shadows set the
+// dest rect to the padded bitmap size. Scaling goes through scaledImage
 // (ScaleMotionFilter while size is moving, ScaleIdleFilter when idle); the scaled
 // premultiplied RGBA is then blitted with src-over.
 func (r *SoftRenderer) drawImage(s *Surface) {
@@ -678,7 +715,7 @@ func (r *SoftRenderer) drawImage(s *Surface) {
 		return // not decoded yet (large images decode in the background)
 	}
 
-	dwl, dhl := float32(iw), float32(ih) // logical dest size
+	dwl, dhl := s.Rect.Size[0], s.Rect.Size[1]
 	if s.ImageScale {
 		fit := s.Rect.Size[1] / float32(ih)
 		dwl, dhl = float32(iw)*fit, float32(ih)*fit
@@ -689,6 +726,11 @@ func (r *SoftRenderer) drawImage(s *Surface) {
 	dh := int(Roundf32(dhl * r.scale))
 	if dw <= 0 || dh <= 0 {
 		return
+	}
+	// Pre-scaled images land at 1:1. Snap 1px dest jitter to the source so
+	// blitPremul dest matches src and scaledImage does not resample.
+	if s.ImageScale && absInt(dw-iw) <= 1 && absInt(dh-ih) <= 1 {
+		dw, dh = iw, ih
 	}
 	dest := image.Rect(x0, y0, x0+dw, y0+dh)
 

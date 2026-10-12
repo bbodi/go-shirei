@@ -11,16 +11,19 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
+	g "go.hasen.dev/generic"
 	"go.hasen.dev/shirei/app"
 )
 
 func main() {
+	flag.Parse()
 	start, _ := os.Getwd()
-	if len(os.Args) > 1 && !stringsHasDash(os.Args[1]) {
-		start = os.Args[1]
+	if flag.NArg() > 0 {
+		start = flag.Arg(0)
 	}
 	root, err := findScanRoot(start)
 	if err != nil {
@@ -36,13 +39,10 @@ func main() {
 	// Discover off the main path so the window opens immediately.
 	// (go list + per-package test listing used to block for several seconds.)
 	go state.scanPackages(root)
+	g.AddExitCleanup(state.cleanupTraceDirs)
 
 	app.SetupWindow("shirei_tester", 1100, 720)
 	app.Run(func() {
 		state.rootView()
 	})
-}
-
-func stringsHasDash(s string) bool {
-	return len(s) > 0 && s[0] == '-'
 }

@@ -5,12 +5,14 @@
 //
 //	go run .                 # GUI; opens cwd's repo if any
 //	go run . /path/to/repo
-//	go run . --png out.png   # headless frame
+//	go run . -png out.png   # headless frame
+//	go run . -session PATH    # session json file, or a directory (session.json inside)
 package main
 
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"sync"
@@ -25,35 +27,17 @@ import (
 // Full diffs are never prefetched; sidebar stats load in parallel via stats workers.
 
 func main() {
-	repoArg := ""
-	pngPath := ""
-	args := os.Args[1:]
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--png":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--png requires an output path")
-				os.Exit(2)
-			}
-			pngPath = args[i+1]
-			i++
-		default:
-			if stringsHasPrefixDash(args[i]) {
-				fmt.Fprintf(os.Stderr, "unknown flag %s\n", args[i])
-				os.Exit(2)
-			}
-			if repoArg == "" {
-				repoArg = args[i]
-			}
-		}
-	}
+	pngPath := flag.String("png", "", "write one settled frame to PATH and exit")
+	flag.StringVar(&sessionOverride, "session", "", "session json file, or a directory containing session.json")
+	flag.Parse()
 
+	repoArg := flag.Arg(0)
 	start := repoArg
 	if start == "" {
 		start, _ = os.Getwd()
 	}
 
-	if pngPath != "" {
+	if *pngPath != "" {
 		// Headless: open one tab, load sync, render. Prefer a real commit over
 		// Working tree / Staging so marketing frames show history + diffs even
 		// when the target repo is dirty. Preload sidebar +/− stats for every
@@ -77,7 +61,7 @@ func main() {
 			}
 			preloadHistoryStats(tab)
 		}
-		if err := RenderToPNG(pngPath, 1100, 700, RootView); err != nil {
+		if err := RenderToPNG(*pngPath, 1100, 700, RootView); err != nil {
 			fmt.Println("render to png failed:", err)
 			os.Exit(1)
 		}
@@ -89,10 +73,10 @@ func main() {
 
 	app.SetupIconBytes(iconPNG)
 	app.SetupWindow("git_history", 1100, 700)
+	app.SetupDrive()
 	app.Run(RootView)
 }
 
-// bootstrapTabs restores session tabs (lazy) or opens a CLI/cwd path.
 func bootstrapTabs(repoArg, cwd string) {
 	// Always load recents + per-repo display opts; restore open tabs only when no CLI path was given.
 	if s, err := loadSession(); err == nil {
@@ -124,10 +108,6 @@ func ensureTabLoaded(t *RepoTab) {
 		return
 	}
 	go refreshHistory(t, true)
-}
-
-func stringsHasPrefixDash(s string) bool {
-	return len(s) > 0 && s[0] == '-'
 }
 
 // openRepoTab resolves path to a work tree, creates a tab (or focuses an

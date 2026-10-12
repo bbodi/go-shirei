@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"os"
+	"unsafe"
 
 	"github.com/cespare/xxhash/v2"
 	g "go.hasen.dev/generic"
@@ -103,17 +104,39 @@ func surfaceImageGeneration(s *Surface) uint64 {
 	return 0
 }
 
-// hashSurface folds one surface's pixel-affecting content into h. Mostly the raw
-// bytes of the flat, pointer-free Surface (like computeSurfacesHash). This is the
-// single place the "what the hash must cover" contract lives; the exception is the
-// image generation (content referenced only by id — see surfaceImageGeneration).
-func hashSurface(h *xxhash.Digest, s *Surface) {
-	h.Write(g.UnsafeRawBytes(s))
+// writeSurfaceHash is the single "what the hash must cover" contract for a
+// surface: the pointer-free Surface prefix with GlyphRunFirst zeroed, glyph
+// content, and image generation. Shared glyph content uses its immutable hash;
+// external screen-space buffers are hashed directly. Memory addresses are never
+// part of the visual content hash.
+//
+// GlyphRunFirst is zeroed IN PLACE and restored before returning, so the
+// surface bytes can be fed to write without a copy. (A local copy escapes to
+// the heap through the write func value — one allocation per surface per
+// frame, the top object count in frame profiles. Both hashing walks own their
+// surface slice for the duration of the walk, so the transient mutation is
+// unobservable.)
+func writeSurfaceHash(write func([]byte), s *Surface, runs []GlyphRun) {
+	first := s.GlyphRunFirst
+	s.GlyphRunFirst = 0
+	write(g.UnsafeRawBytes(s)[:unsafe.Offsetof(s.GlyphData)])
+	s.GlyphRunFirst = first
+	if n := s.GlyphRunCount; n > 0 {
+		if s.GlyphData != nil {
+			write(g.UnsafeRawBytes(&s.GlyphData.hash))
+		} else {
+			write(g.UnsafeSliceBytes(runs[first : first+n]))
+		}
+	}
 	if gen := surfaceImageGeneration(s); gen != 0 {
 		var buf [8]byte
 		putUint64(&buf, gen)
-		h.Write(buf[:])
+		write(buf[:])
 	}
+}
+
+func hashSurface(h *xxhash.Digest, s *Surface, runs []GlyphRun) {
+	writeSurfaceHash(func(b []byte) { h.Write(b) }, s, runs)
 }
 
 // collectRegions walks the flat surface list once, maintaining a stack of open
@@ -122,7 +145,7 @@ func hashSurface(h *xxhash.Digest, s *Surface) {
 // change propagates up so an outer region is stable only if its whole subtree is).
 // Fills byStart{end,hash} for every region and updates the seen-hash sets and
 // measurement stats.
-func (rc *regionCache) collectRegions(surfaces []Surface) {
+func (rc *regionCache) collectRegions(surfaces []Surface, runs []GlyphRun) {
 	if rc.byStart == nil {
 		rc.byStart = make(map[int]regionInfo)
 		rc.prevHashes = make(map[uint64]int)
@@ -145,7 +168,7 @@ func (rc *regionCache) collectRegions(surfaces []Surface) {
 				continue // unbalanced; renderSurfaces will panic, don't mask it here
 			}
 			d := depth - 1
-			hashSurface(rc.digests[d], s) // the pop/border belongs to this region
+			hashSurface(rc.digests[d], s, runs) // the pop/border belongs to this region
 			rc.direct[d]++
 			h := rc.digests[d].Sum64()
 			start := rc.starts[d]
@@ -176,7 +199,7 @@ func (rc *regionCache) collectRegions(surfaces []Surface) {
 			rc.digests[d].Reset()
 			rc.starts[d] = i
 			rc.direct[d] = 1 // the push surface is this region's own background
-			hashSurface(rc.digests[d], s)
+			hashSurface(rc.digests[d], s, runs)
 			depth++
 			if depth > rc.stats.MaxDepth {
 				rc.stats.MaxDepth = depth
@@ -186,7 +209,7 @@ func (rc *regionCache) collectRegions(surfaces []Surface) {
 
 		if depth > 0 {
 			d := depth - 1
-			hashSurface(rc.digests[d], s)
+			hashSurface(rc.digests[d], s, runs)
 			rc.direct[d]++
 		}
 	}
@@ -224,7 +247,7 @@ func (r *SoftRenderer) renderCached(surfaces []Surface) {
 		rc.entries = make(map[uint64]*regionEntry)
 	}
 	rc.frame++
-	rc.collectRegions(surfaces)
+	rc.collectRegions(surfaces, r.glyphRuns)
 
 	i := 0
 	for i < len(surfaces) {

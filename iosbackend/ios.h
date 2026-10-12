@@ -1,12 +1,13 @@
 // C interface between the Go iosbackend and its Objective-C implementation
 // (ios.m). Declarations only; see the .m for behavior.
 //
-// UIKit window + CADisplayLink + CPU BGRA present via CALayer.
-// Soft keyboard + IME: UITextInput on the content view, driven by WantsKeyboard.
-// Content view frame = full safe area (stable layer size — no stretch during
-// keyboard animation). WindowSize / layout size = safe area minus keyboard
-// overlap (inputAccessoryView height is included in the keyboard end frame).
-// Rasterization lives in shirei's core software renderer.
+// UIKit window + CADisplayLink. Metal (CAMetalLayer drawable) is the default
+// compositor; software BGRA via CALayer.contents is the fallback if Metal init
+// fails. Soft keyboard + IME: UITextInput on the content view, driven by
+// WantsKeyboard. Content view frame = full safe area (stable layer size — no
+// stretch during keyboard animation). WindowSize / layout size = safe area
+// minus keyboard overlap (inputAccessoryView height is included in the
+// keyboard end frame).
 #ifndef SHIREI_IOS_H
 #define SHIREI_IOS_H
 
@@ -61,10 +62,16 @@ void ios_openURL(const char *url);
 // across activity teardown without care. Experiment only.
 void *ios_rootViewController(void);
 
+// Call before ios_attach. Non-zero: ShireiView uses a CAMetalLayer (GPU present).
+// Zero (default): CALayer + ios_present_bgra software path.
+void ios_set_metal(int on);
+
+// The content view's CAMetalLayer, or NULL if software present / not attached.
+void *ios_metal_layer(void);
+
 // ---- present ----
-// pixels: premultiplied BGRA, top-down, row stride in bytes. Copied into a
-// CGImage and set as the view layer's contents (fine for a spike; IOSurface
-// later if needed).
+// Software fallback: pixels are premultiplied BGRA, top-down, row stride in
+// bytes. Copied into a CGImage and set as the view layer's contents.
 void ios_present_bgra(const void *pixels, int stride, int width, int height);
 
 #endif

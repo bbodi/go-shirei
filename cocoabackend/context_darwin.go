@@ -2,11 +2,6 @@
 
 package cocoabackend
 
-/*
-#include "cocoa.h"
-*/
-import "C"
-
 import (
 	"unsafe"
 
@@ -21,9 +16,9 @@ type Context struct{}
 func (Context) Platform() string { return "darwin" }
 
 // NSWindow returns the live NSWindow as an opaque pointer, or nil if the host
-// has not created a window yet. Cast with cgo / ObjC (__bridge NSWindow *).
+// has not created a window yet. Cast with objc / AppKit (NSWindow *).
 func (Context) NSWindow() unsafe.Pointer {
-	return unsafe.Pointer(C.cocoa_nsWindow())
+	return nsWindowPtr()
 }
 
 var _ shirei.BackendContext = Context{}

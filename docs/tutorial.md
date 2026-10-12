@@ -22,6 +22,10 @@ Specialized feature write-ups live next to this file (for example
 [drag-drop.md](drag-drop.md) for item drag-and-drop,
 [virtual-list.md](virtual-list.md) for VirtualList and `Measure`,
 [layout-tutorial.md](layout-tutorial.md) for a progressive multi-panel shell,
+[appearance-tutorial.md](appearance-tutorial.md) for color schemes, dark mode,
+and widget styling,
+[drive-tutorial.md](drive-tutorial.md) for access attributes and windowed
+behavior tests over UDP ([drive.md](drive.md) is the command list),
 and [android.md](android.md) / [ios.md](ios.md) for device runners). Touch and
 multi-touch contacts are covered under Interaction (§6). This file stays a
 general overview.
@@ -37,7 +41,7 @@ An initial version was written with Fugu (SakanaAI).
 
 ## 1. UI as a function of state
 
-Shirei uses a **plain-data, declarative** application model. Your program
+Shirei uses a **plain-data, immediate-mode** application model. Your program
 describes what the whole UI should look like right now whenever Shirei
 evaluates a requested update:
 
@@ -179,16 +183,20 @@ Container(Attrs(Row, Expand, CrossMid, Gap(10), Pad(12)), func() {
 
 ## 3. Verify as you go: headless rendering
 
-Shirei renders with its own software rasterizer, so a frame can be rendered
-**without opening a window**. For AI agents especially, it's recommended to
-build this into the app from the start — it gives a very fast feedback loop for
-everything else in this tutorial:
+Headless snapshots always use Shirei's software rasterizer (`SoftRenderer`), so
+a frame can be rendered **without opening a window** and without a GPU.
+Windowed paint is separate: GPU compositor by default (Metal / GLES / D3D11 /
+WebGL2); X11 stays software; `SHIREI_GPU=0` or init failure falls back to
+software. For AI agents especially, it's recommended to build a PNG path into
+the app from the start — it gives a very fast feedback loop for everything
+else in this tutorial:
 
 ```go
 func main() {
-    // `myapp --png out.png` renders one settled frame and exits
-    if len(os.Args) >= 3 && os.Args[1] == "--png" {
-        if err := RenderToPNG(os.Args[2], 1000, 700, RootView); err != nil {
+    png := flag.String("png", "", "write one settled frame to PATH and exit")
+    flag.Parse()
+    if *png != "" {
+        if err := RenderToPNG(*png, 1000, 700, RootView); err != nil {
             fmt.Println("render failed:", err)
         }
         return
@@ -212,10 +220,13 @@ with animations disabled — so the output is deterministic. This gives you:
 - **AI-friendly verification**: a coding session can render your app and
   *look at it* without a human driving a window.
 
-For testing interactions (clicks, typing, scrolling) headlessly, drive frames
-directly: set `WindowSize`, fill `InputState`/`FrameInput`, and call
+For testing interactions (clicks, typing, scrolling) **headlessly**, drive
+frames directly: set `WindowSize`, fill `InputState`/`FrameInput`, and call
 `RunFrameFn`. The tests in `widgets/semantic_test.go` are the reference
 pattern.
+
+For the same interactions in a **real window** (separate process, loopback
+UDP), see [drive-tutorial.md](drive-tutorial.md).
 
 One habit worth forming: when a screen reaches a state you like, snapshot it.
 The test then guards every future refactor for free.
@@ -322,6 +333,10 @@ on each axis that matters:
   (`FixHeight`, `MinHeight` with a non-extrinsic height path, or a parent
   height slot), its **height collapses** — there is nothing content can
   contribute and nothing external assigned.
+
+If content disappears unexpectedly, enable the opt-in
+[layout warnings on stderr](#layout-warnings-on-stderr) to look for collapsed
+extrinsic containers.
 
 **Pick the tool for the job:**
 
@@ -733,12 +748,39 @@ scroll without building offscreen rows at all.)
 
 ### Focus and keyboard
 
-Text inputs handle their own focus (`FocusOnClick`, `AutoFocus`) and support
-tab-cycling between `Focusable` containers (`CycleFocusOnTab`). For your own
-focusable widgets, the same primitives are available: `HasFocus()`,
-`Focus()`, `Blur()`. Keyboard state is queried like everything else:
-`FrameInput.Key` (pressed this frame), `FrameInput.Text` (text typed this
-frame, IME-aware), `InputState.Modifiers`, `InputState.DownKeys`.
+Text inputs handle their own focus (`FocusOnClick`, `AutoFocus`). Default
+widgets (`Button`, `CheckBox`, `OptionButton`, `ToggleSwitch`, `Slider`,
+`TextInput`, menus, segmented cells, …) mark their container `Focusable`.
+Tab and Shift+Tab cycle among those containers in source order. Space or
+Enter activates a focused button or toggle; arrows move a focused slider
+or segmented control. For your own focusable widgets, the same primitives
+are available: `ModAttrs(Focusable)`, `HasFocus()`, `Focus()`, `Blur()`.
+Keyboard focus and its visual indicator are separate. `HasFocus()` determines
+where keyboard input goes; `HasVisibleFocus()` determines whether to paint an
+ordinary focus outline.
+
+`Focus()` and `FocusImmediateOn(id)` clear the indicator flag, including when
+requesting the same target. Keyboard navigation calls `ShowFocusIndicator()`
+after taking focus:
+
+```go
+FocusImmediateOn(nextControl)
+ShowFocusIndicator()
+```
+
+Tab, Shift+Tab, the stock widgets' keyboard interactions, and accessibility
+focus requests enable the indicator. Clicking a control takes focus without
+the outline. Moving the pointer, scrolling, and unrelated keys do not change
+the flag. Automatic first-stop focus in a modal or `TabAfter` subtree carries
+the existing indication into that subtree unless a child explicitly requests
+focus. Each UI has its own flag, initially off.
+
+Text editors use `HasFocus` for their caret, selection, and editing appearance
+even after a mouse click.
+
+Keyboard state is queried like everything else: `FrameInput.Key` (pressed
+this frame), `FrameInput.Text` (text typed this frame, IME-aware),
+`InputState.Modifiers`, `InputState.DownKeys`.
 
 ```go
 TextInput(&appData.filter)       // edits the string in place
@@ -748,6 +790,41 @@ PasswordInput(&appData.secret)
 That pointer-passing style is the plain-data payoff: no binding and no change
 events. If anything else modifies the string, the input shows it on the next
 requested update.
+
+### Button properties
+
+Use `NextButton` setters for optional properties while keeping the ordinary
+button call:
+
+```go
+NextButtonType(ButtonPrimary)
+NextButtonDisabled(!canSave)
+if Button(SymPass, "Save") {
+    save()
+}
+Button(NoIcon, "Cancel")
+```
+
+The next button consumes the properties and resets them to defaults, so Cancel
+uses the ordinary style and is enabled. Keep the setters inside the same
+conditional as their button. `ButtonPrimary` and `ButtonDestructive` express
+the action's role. `CtrlButton`, `MenuButton`, and `CtrlMenuButton` also consume
+these properties.
+
+### Appearance
+
+Stock widgets use the built-in light scheme by default. At the start of your
+root view, `ModAttrs(UseSurface(SurfaceCanvas))` supplies the matching application
+background and inherited text color.
+
+For light/dark selection, following system appearance, custom palettes, and
+per-widget styling, see the [appearance tutorial](appearance-tutorial.md).
+
+### Accessibility
+
+Stock controls include basic screen-reader support. When building custom
+controls, follow the [accessibility tutorial](accessibility-tutorial.md) to
+expose their labels, state, and actions.
 
 ### Clipboard
 
@@ -890,7 +967,8 @@ object-derived caches in `UseData`.
 ### Layout queries and multipass settle
 
 Builders run *before* this frame's layout is fully committed, so every
-geometry query — `GetResolvedSize`, `GetContentRect`, `GetScreenRect`, and
+geometry query — `GetResolvedWidth`, `GetResolvedHeight`, `GetResolvedSize`,
+`GetContentRect`, `GetScreenRect`, and
 the `...Of(id)` variants like `GetScreenRectOf(id)` — answers from the
 **previous layout pass**. For a brand-new container that has never been
 laid out, that answer is zero until a pass has produced real sizes.
@@ -907,14 +985,35 @@ sibling geometry” layouts. In practice the runtime handles the common case:
 
 ```go
 // Split by ratio of the current container's resolved height.
-// On the first pass GetResolvedSize may be zero; the settle pass re-runs
+// On the first pass GetResolvedHeight may be zero; the settle pass re-runs
 // the builder once sizes exist — no RequestNextFrame required for that.
-totalHeight := GetResolvedSize()[1]
+totalHeight := GetResolvedHeight()
 topAttrs := Attrs(Expand, Clip)
 if totalHeight > 0 {
     topAttrs = Attrs(FixHeight(totalHeight*splitRatio), Expand, Clip)
 }
 ```
+
+Use the scalar query that describes the dependency:
+
+| Query | Dimension tracked |
+| --- | --- |
+| `GetResolvedWidth()` | Outer width |
+| `GetResolvedHeight()` | Outer height |
+| `GetContentWidth()` | Outer width minus horizontal padding |
+| `GetContentHeight()` | Outer height minus vertical padding |
+
+A width-only query does not request settling when only height changes, and
+vice versa. Content queries also detect padding changes, even if the outer
+box is unchanged. Content width/height describe the available area inside
+padding, not the extent of overflowing children (`RenderData.ContentSize`).
+`GetResolvedSize()` and `GetAvailableSize()` track both dimensions. Indexing
+one component of their returned vector still registers both; use a scalar
+getter when the build needs only one axis.
+
+Multiple queries on a node accumulate for the current pass. Queries in later
+passes establish fresh dependencies. Size and padding animation progress do
+not trigger extra settling when their layout targets are unchanged.
 
 A few nuances:
 
@@ -928,7 +1027,7 @@ A few nuances:
   is why goldens are stable without manual multipass in app code.
 
 See `examples/see_pprof` (`MainContent`) for a real split pane that reads
-`GetResolvedSize` while building.
+`GetResolvedHeight` while building.
 
 ### Animation: on by default
 
@@ -992,12 +1091,12 @@ built-in generic `Table`:
 columns := []TableColumn[*Item]{
     {
         Label:  "Name",
-        Render: func(it *Item) { Label(it.Name) },
+        Cell:   func(it *Item) { Label(it.Name) },
         Less:   func(a, b *Item) bool { return a.Name < b.Name },
     },
     {
         Label: "Size", Width: 90, DefaultDesc: true,
-        Render: func(it *Item) { Label(formatBytes(it.Size)) },
+        Cell:  func(it *Item) { Label(formatBytes(it.Size)) },
         Less:   func(a, b *Item) bool { return a.Size < b.Size },
     },
 }
@@ -1317,6 +1416,66 @@ or lags one step behind interactions.
 
 Fix: `NoAnimate` on hand-positioned containers (§7). `Viewport` already
 includes it.
+
+### Layout warnings on stderr
+
+Set `SHIREI_LAYOUT_WARN=1` **before starting the program** to enable layout
+warnings. The flag is read at process startup and is off by default.
+
+```sh
+SHIREI_LAYOUT_WARN=1 go run .
+```
+
+For a working demonstration, run this from the `shirei` directory:
+
+```sh
+SHIREI_LAYOUT_WARN=1 go run ./demos/layout-warnings
+```
+
+The [layout-warnings demo](../demos/layout-warnings) shows a collapsed container
+beside its corrected version. **Recreate examples** gives them new identities
+so the warning can be observed again.
+
+Warnings go to **stderr**, so they appear in the terminal running the app.
+To keep them in a file, use `SHIREI_LAYOUT_WARN=1 go run . 2>layout.log`
+(the file also receives other stderr output). In PowerShell, set
+`$env:SHIREI_LAYOUT_WARN = "1"` before `go run .`.
+
+The check reports a clipped extrinsic container whose width or height is zero
+while its content needs positive space on that axis and its parent has space
+available. For example:
+
+```text
+shirei: layout warning: clipped content in zero-height extrinsic container #42
+  builder location: /path/to/project/main.go:28
+  resolved: 240 x 0
+  content: 30 x 20
+  parent layout: row (available: 240 x 60)
+  Extrinsic excludes children from size measurement.
+  Check cross-axis expansion (Expand) or an explicit size constraint.
+```
+
+Use the resolved and content sizes to identify the missing dimension. The
+parent's direction determines whether `Grow` or `Expand` can allocate that
+dimension; an explicit size constraint or content-sized wrapper may be more
+appropriate. The parent size shown is its content-box budget, not necessarily
+unused space after siblings take their share. The diagnostic does not change
+layout or choose a fix.
+
+**Builder location** is the definition of the function passed to `Container`
+or `ContainerWithKey`, resolved from its existing identity code pointer. With
+an inline `func() { ... }`, this points to the function literal. With a named
+or shared builder, it points to that function's definition, **not** the place
+where the container is called. It reads `unavailable` if source information
+cannot be resolved. There is no per-frame stack capture.
+
+The check runs after the final layout pass and reports each container identity
+once per collapsed axis. A remounted container can warn again. Intermediate
+settle passes, zero-sized windows, and children of collapsed or fully clipped
+parents do not produce warnings. Opening size animations with a nonzero layout
+target do not count as collapsed. This is a focused diagnostic, not a general
+layout validator: intentional zero-sized containers can still match, and an
+absence of warnings does not establish that the layout is correct.
 
 ### Extrinsic on a content row collapses height
 

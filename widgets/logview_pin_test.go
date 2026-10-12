@@ -58,7 +58,7 @@ func TestLogViewStreamPinNoJump(t *testing.T) {
 	ring := NewTextRingSize(64<<10, 0)
 	attrs := DefaultTextStyle()
 	attrs.FontSize = 14
-	attrs.FontFamilies = Monospace
+	attrs.SetFontFamilies(Monospace...)
 
 	listKey := new(int)
 	scope := new(int)

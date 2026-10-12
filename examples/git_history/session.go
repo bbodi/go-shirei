@@ -43,9 +43,19 @@ type sessionData struct {
 var (
 	sessionSaveMu   sync.Mutex
 	sessionSavePend bool
+	// sessionOverride is --session: a json file, or a directory containing session.json.
+	sessionOverride string
 )
 
 func sessionFilePath() (string, error) {
+	if sessionOverride != "" {
+		p := sessionOverride
+		st, err := os.Stat(p)
+		if err == nil && st.IsDir() {
+			return filepath.Join(p, "session.json"), nil
+		}
+		return p, nil
+	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
@@ -183,8 +193,14 @@ func applySessionDisplay(s sessionData) {
 	appData.displayByPath = m
 }
 
+// skipSessionSave is set by in-process tests so they do not write the session file.
+var skipSessionSave bool
+
 // scheduleSaveSession debounces disk writes (many tab ops in one gesture).
 func scheduleSaveSession() {
+	if skipSessionSave {
+		return
+	}
 	sessionSaveMu.Lock()
 	if sessionSavePend {
 		sessionSaveMu.Unlock()

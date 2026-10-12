@@ -19,6 +19,14 @@ int shirei_android_poll(int timeoutMillis);
 int shirei_android_window_width(void);
 int shirei_android_window_height(void);
 
+// Current ANativeWindow* (NULL if none). For EGL; do not lock this window
+// while an EGL surface owns it.
+void *shirei_android_native_window(void);
+
+// Set the window to CPU-lockable RGBA8888. Call before the software present
+// path; skip when EGL is presenting.
+void shirei_android_use_cpu_buffers(void);
+
 // The visible content rect within the window (excludes status/nav bars and,
 // with adjustResize, the soft keyboard — the surface itself never resizes;
 // only this rect does). All zeros when unknown.

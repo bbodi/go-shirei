@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"go.hasen.dev/shirei"
+	"go.hasen.dev/shirei/drive"
 )
 
 type testStatus int
@@ -47,6 +48,8 @@ type TestItem struct {
 	Snaps      []shirei.SnapResult
 	// SawReport is true after at least one SHIREI_SNAP_REPORT line for this test.
 	SawReport bool
+	Drive     bool // windowed drive.Start test
+	Trace     []drive.TraceEvent
 }
 
 // PackageItem groups tests under one package directory.
@@ -54,6 +57,7 @@ type PackageItem struct {
 	Dir        string
 	ImportPath string
 	Rel        string // relative to scan root; "." for the root package
+	DriveOnly  bool   // listed tests are drive tests; skip from Run all
 	Tests      []*TestItem
 }
 
@@ -119,6 +123,15 @@ type AppState struct {
 
 	// treeListKey is the VirtualListView identity for the test list (addressable).
 	treeListKey int
+
+	// reviewDiffs replaces the test list + detail with a gallery of every
+	// mismatched snapshot so many Accepts can happen from one screen.
+	reviewDiffs bool
+	diffListKey int
+
+	// traceDirs are SHIREI_DRIVE_TRACE roots created this session. Removed
+	// on exit so /tmp does not keep every run's PNGs.
+	traceDirs []string
 }
 
 // scanPackages runs discoverPackages and publishes results under the mutex.
@@ -139,6 +152,25 @@ func (s *AppState) scanPackages(root string) {
 
 func (s *AppState) lock()   { s.mu.Lock() }
 func (s *AppState) unlock() { s.mu.Unlock() }
+
+func (s *AppState) rememberTraceDir(dir string) {
+	if dir == "" {
+		return
+	}
+	s.lock()
+	s.traceDirs = append(s.traceDirs, dir)
+	s.unlock()
+}
+
+func (s *AppState) cleanupTraceDirs() {
+	s.lock()
+	dirs := append([]string(nil), s.traceDirs...)
+	s.traceDirs = nil
+	s.unlock()
+	for _, d := range dirs {
+		_ = os.RemoveAll(d)
+	}
+}
 
 func (s *AppState) selectedTest() *TestItem {
 	if s.SelPkg < 0 || s.SelPkg >= len(s.Packages) {
@@ -284,6 +316,8 @@ type testView struct {
 	Output    string
 	Snaps     []shirei.SnapResult
 	SawReport bool
+	Drive     bool
+	Trace     []drive.TraceEvent
 }
 
 // treePkgView / treeTestView are list-panel snapshots under the app mutex.
@@ -300,6 +334,8 @@ type treeTestView struct {
 	Busy        bool
 	SawReport   bool
 	HasMismatch bool
+	Drive       bool
+	HasTrace    bool
 }
 
 // snapshotTree builds a full list-panel view under the lock.
@@ -328,12 +364,21 @@ func (s *AppState) snapshotTree() (pkgs []treePkgView, selPkg, selTest int, want
 					break
 				}
 			}
+			hasShot := false
+			for _, ev := range test.Trace {
+				if ev.Kind == "shot" {
+					hasShot = true
+					break
+				}
+			}
 			tests[ti] = treeTestView{
 				Name:        test.Name,
 				Status:      test.Status,
 				Busy:        b,
 				SawReport:   test.SawReport && len(test.Snaps) > 0,
 				HasMismatch: hasMismatch,
+				Drive:       test.Drive,
+				HasTrace:    hasShot,
 			}
 		}
 		if anyTest {
@@ -368,6 +413,8 @@ func (s *AppState) snapshotDetail() (tv testView, ok bool, busy bool, selSnap in
 		Output:    t.Output,
 		SawReport: t.SawReport,
 		Snaps:     append([]shirei.SnapResult(nil), t.Snaps...),
+		Drive:     t.Drive,
+		Trace:     append([]drive.TraceEvent(nil), t.Trace...),
 	}
 	return
 }
@@ -574,6 +621,76 @@ func (s *AppState) moveToError(delta int) {
 // errorCount is the number of tests with fail status or snapshot mismatch.
 func (s *AppState) errorCount() int {
 	return len(s.flatTests(true))
+}
+
+// mismatchItem is one failing snapshot for the all-diffs gallery.
+type mismatchItem struct {
+	PkgDir, PkgLabel, Test, Name string
+	Golden, Actual               string
+}
+
+func (s *AppState) mismatchCount() int {
+	n := 0
+	for _, p := range s.Packages {
+		for _, t := range p.Tests {
+			for _, sn := range t.Snaps {
+				if sn.Status == "mismatch" {
+					n++
+				}
+			}
+		}
+	}
+	return n
+}
+
+func (s *AppState) mismatchSnaps() []mismatchItem {
+	s.lock()
+	defer s.unlock()
+	var out []mismatchItem
+	for _, p := range s.Packages {
+		for _, t := range p.Tests {
+			for _, sn := range t.Snaps {
+				if sn.Status != "mismatch" {
+					continue
+				}
+				out = append(out, mismatchItem{
+					PkgDir:   p.Dir,
+					PkgLabel: p.DisplayRel(),
+					Test:     t.Name,
+					Name:     sn.Name,
+					Golden:   sn.Golden,
+					Actual:   sn.Actual,
+				})
+			}
+		}
+	}
+	return out
+}
+
+func (s *AppState) selectMismatch(pkgDir, test, snap string) {
+	s.lock()
+	defer s.unlock()
+	for pi, p := range s.Packages {
+		if p.Dir != pkgDir {
+			continue
+		}
+		for ti, t := range p.Tests {
+			if t.Name != test {
+				continue
+			}
+			s.SelPkg, s.SelTest = pi, ti
+			s.SelSnap = 0
+			for i, sn := range t.Snaps {
+				if sn.Name == snap {
+					s.SelSnap = i
+					break
+				}
+			}
+			s.reviewDiffs = false
+			s.scrollSelIntoView = true
+			return
+		}
+	}
 }
 
 func stringsHasSuffixTest(full, name string) bool {

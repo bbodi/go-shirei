@@ -1,6 +1,7 @@
 package main
 
 import (
+	"go.hasen.dev/shirei/examples/internal/themetest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,20 +11,6 @@ import (
 
 	"go.hasen.dev/shirei"
 )
-
-func checkSnap(t *testing.T, r shirei.SnapResult) {
-	t.Helper()
-	switch {
-	case r.Status == shirei.SnapSkip:
-		t.Skip(r.Reason)
-	case r.Err != nil:
-		t.Fatal(r.Err)
-	case r.Status == shirei.SnapMismatch:
-		t.Errorf("render does not match snapshot %s; wrote %s", shirei.SnapAbsPath(r.Golden), shirei.SnapAbsPath(r.Actual))
-	case r.Status == shirei.SnapCreated:
-		t.Logf("created snapshot %s; review it and commit it", shirei.SnapAbsPath(r.Golden))
-	}
-}
 
 // writeFixtureProfile constructs a small, fully deterministic CPU profile
 // and writes it to path. Built in memory rather than committed as a binary
@@ -120,7 +107,7 @@ func TestSnapshotSeePprofMain(t *testing.T) {
 		t.Fatalf("fixture failed to parse: %v", appData.parseErr)
 	}
 
-	checkSnap(t, shirei.Snapshot(t.Name(), "see_pprof_main", 1100, 700, RootView))
+	themetest.Snapshot(t, "see_pprof_main", 1100, 700, RootView)
 }
 
 // TestShapeCacheSteadyState pins that a static UI does not re-shape text
@@ -169,5 +156,133 @@ func TestShapeCacheSteadyState(t *testing.T) {
 	}
 	if hits < calls*95/100 {
 		t.Errorf("shape cache ineffective in steady state: %d/%d hits — text is re-shaped through harfbuzz every frame", hits, calls)
+	}
+}
+
+// TestUnnamedFramesHaveLabels: some profiles attach a Function with an
+// empty Name (native / unsymbolized). The flame tree still gives those
+// frames a label, and the tooltip can size itself when the name is empty.
+func TestUnnamedFramesHaveLabels(t *testing.T) {
+	named := &profile.Function{ID: 1, Name: "main.main"}
+	sys := &profile.Function{ID: 2, SystemName: "runtime.foo"}
+	empty := &profile.Function{ID: 3}
+	locNamed := &profile.Location{ID: 1, Address: 0x10, Line: []profile.Line{{Function: named}}}
+	locSys := &profile.Location{ID: 2, Address: 0x20, Line: []profile.Line{{Function: sys}}}
+	locAddr := &profile.Location{ID: 3, Address: 0x30, Line: []profile.Line{{Function: empty}}}
+	locUnknown := &profile.Location{ID: 4, Line: []profile.Line{{Function: empty}}}
+
+	p := &profile.Profile{
+		SampleType: []*profile.ValueType{{Type: "cpu", Unit: "nanoseconds"}},
+		Function:   []*profile.Function{named, sys, empty},
+		Location:   []*profile.Location{locNamed, locSys, locAddr, locUnknown},
+		Sample: []*profile.Sample{
+			{Value: []int64{10}, Location: []*profile.Location{locNamed}},
+			{Value: []int64{20}, Location: []*profile.Location{locSys}},
+			{Value: []int64{30}, Location: []*profile.Location{locAddr}},
+			{Value: []int64{40}, Location: []*profile.Location{locUnknown}},
+		},
+	}
+
+	root, _ := buildFlameTree(p, 0)
+	got := map[string]int64{}
+	for _, c := range root.Children {
+		if c.Name == "" {
+			t.Fatal("flame node with empty name")
+		}
+		got[c.Name] = c.Value
+	}
+	want := map[string]int64{
+		"main.main":   10,
+		"runtime.foo": 20,
+		"0x30":        30,
+		"(unknown)":   40,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("children %v, want %v", got, want)
+	}
+	for name, val := range want {
+		if got[name] != val {
+			t.Errorf("%q value %d, want %d", name, got[name], val)
+		}
+	}
+
+	shirei.InitFontSubsystem()
+	shirei.ResetInputSession()
+	shirei.GetHost().WindowSize = shirei.Vec2{400, 300}
+	shirei.GetHost().Input.MousePoint = shirei.Vec2{20, 20}
+	shirei.RunFrameFn(func() {
+		shirei.Container(shirei.AttrSet{Grow: 1, ExpandAcross: true}, func() {
+			flameTooltip(&FlameNode{Name: "", Value: 1}, 400, 300)
+		})
+	})
+}
+
+func TestFileViewPersistsAcrossSwitch(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureProfile(t, filepath.Join(dir, "a.pprof"))
+	writeFixtureProfile(t, filepath.Join(dir, "b.pprof"))
+	appData.dir = dir
+	refreshFileList()
+
+	selectFile("a.pprof")
+	if appData.parseErr != nil {
+		t.Fatalf("a.pprof: %v", appData.parseErr)
+	}
+	st := fileView("a.pprof")
+	if len(appData.flameRoot.Children) == 0 {
+		t.Fatal("a.pprof has no flame children")
+	}
+	st.scale = 4
+	st.panX = 12
+	st.selectedFunc = "shirei.ShapeText"
+	st.peekFunc = "shirei.ShapeText"
+	st.tableSort.Column = 0
+	st.tableSort.Desc = false
+	st.tableScroll = 90
+	setFocus(st, appData.flameRoot.Children[0])
+	focusName := st.focus.Name
+	oldFocus := st.focus
+
+	selectFile("b.pprof")
+	if appData.parseErr != nil {
+		t.Fatalf("b.pprof: %v", appData.parseErr)
+	}
+	stB := fileView("b.pprof")
+	if stB.scale != 1 {
+		t.Fatalf("fresh file scale = %v, want 1", stB.scale)
+	}
+	if stB.focus != nil || stB.selectedFunc != "" {
+		t.Fatalf("fresh file inherited view: focus=%v selected=%q", stB.focus, stB.selectedFunc)
+	}
+
+	selectFile("a.pprof")
+	st = fileView("a.pprof")
+	if st.scale != 4 || st.panX != 12 {
+		t.Fatalf("zoom not restored: scale=%v panX=%v", st.scale, st.panX)
+	}
+	if st.selectedFunc != "shirei.ShapeText" || st.peekFunc != "shirei.ShapeText" {
+		t.Fatalf("selection not restored: selected=%q peek=%q", st.selectedFunc, st.peekFunc)
+	}
+	if st.tableSort.Column != 0 || st.tableSort.Desc {
+		t.Fatalf("sort not restored: %+v", st.tableSort)
+	}
+	if st.tableScroll != 90 {
+		t.Fatalf("table scroll not restored: %v", st.tableScroll)
+	}
+	if st.focus == nil || st.focus.Name != focusName {
+		t.Fatalf("focus not restored: %+v want %s", st.focus, focusName)
+	}
+	if st.focus == oldFocus {
+		t.Fatal("focus pointer is the pre-reparse node, not the new tree")
+	}
+	found := false
+	for _, c := range appData.flameRoot.Children {
+		if c == st.focus {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("restored focus is not a child of the current flame root")
 	}
 }

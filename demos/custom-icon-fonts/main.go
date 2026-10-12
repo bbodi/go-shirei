@@ -9,6 +9,7 @@ package main
 
 import (
 	_ "embed"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -225,8 +226,10 @@ var defaultFallback = []namedIcon{
 }
 
 func main() {
-	if len(os.Args) >= 3 && os.Args[1] == "--png" {
-		if err := RenderToPNG(os.Args[2], 900, 720, root); err != nil {
+	png := flag.String("png", "", "write one settled frame to PATH and exit")
+	flag.Parse()
+	if *png != "" {
+		if err := RenderToPNG(*png, 900, 720, root); err != nil {
 			fmt.Println("render to png failed:", err)
 			os.Exit(1)
 		}

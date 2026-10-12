@@ -62,6 +62,29 @@ func init() {
 		}
 	}
 
+	setPlatformSize = func(ctx shirei.BackendContext, w, h float32) {
+		switch c := ctx.(type) {
+		case x11backend.Context:
+			if !c.Connected() {
+				return
+			}
+			conn := c.Conn()
+			win := c.Window()
+			if conn == nil || win == 0 {
+				return
+			}
+			scale := shirei.GetHost().WindowScale
+			if scale <= 0 {
+				scale = 1
+			}
+			devW := uint32(w*scale + 0.5)
+			devH := uint32(h*scale + 0.5)
+			_ = xproto.ConfigureWindowChecked(conn, win,
+				xproto.ConfigWindowWidth|xproto.ConfigWindowHeight,
+				[]uint32{devW, devH}).Check()
+		}
+	}
+
 	setPlatformCenter = func(ctx shirei.BackendContext) {
 		c, ok := ctx.(x11backend.Context)
 		if !ok || !c.Connected() {

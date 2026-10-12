@@ -29,6 +29,9 @@ func main() {
 	// Enforce a minimum window size of 400×300 logical points
 	window.SetMinSize(400, 300)
 
+	// Optional: set the current content size
+	window.SetSize(800, 600)
+
 	app.Run(root)
 }
 
@@ -43,14 +46,15 @@ func root() {
 
 * `window.Center()`: Center the window on the display (best-effort across desktop platforms; ignored on Wayland and mobile).
 * `window.Position(x, y int)`: Position the top-left corner of the window at `(x, y)` in screen coordinates (logical points).
-* `window.SetMinSize(minWidth, minHeight float32)`: Enforce minimum window dimensions (in logical points).
+* `window.SetMinSize(minWidth, minHeight float32)`: Enforce minimum window dimensions (in logical points). Does not shrink an already-larger window.
+* `window.SetSize(width, height float32)`: Set the current content size (logical points). Ignored on Wayland and mobile.
 
 ## Mechanism
 
 `window` uses `Host.EscapeHatchBackendContext` to interact with native window
 handles:
 
-* **macOS (`cocoabackend`)**: Uses `[NSWindow center]`, `[NSWindow setFrameTopLeftPoint:]`, and `[NSWindow setContentMinSize:]`.
+* **macOS (`cocoabackend`)**: Uses `[NSWindow center]`, `[NSWindow setFrameTopLeftPoint:]`, `[NSWindow setContentMinSize:]`, and `[NSWindow setContentSize:]`.
 * **Windows (`win32backend`)**: Uses `SetWindowPos` for centering and positioning; subclasses via `SetWindowSubclass` for `WM_GETMINMAXINFO` (`ptMinTrackSize`), adjusting for DPI scale.
 * **Linux X11 (`x11backend`)**: Uses `xproto.ConfigureWindow` for positioning/centering; sets `WM_NORMAL_HINTS` (`PMinSize`) for minimum size.
 * **Linux Wayland (`waylandbackend`)**: Calls `xdg_toplevel.set_min_size`; top-level window positioning is compositor-managed.

@@ -22,6 +22,8 @@ var snapshotTestMarkers = [][]byte{
 	[]byte("layoutSnapshot"),
 }
 
+var driveTestMarker = []byte("drive.Start")
+
 // findScanRoot finds a module or workspace root from start (or an explicit path).
 // Walks up for go.work, then go.mod. Not shirei-specific.
 func findScanRoot(start string) (string, error) {
@@ -45,19 +47,67 @@ func findScanRoot(start string) (string, error) {
 }
 
 // moduleDirs returns directories to walk: either root itself or each go.work
-// use entry (absolute). No go list — pure filesystem.
+// use entry (absolute), plus nested modules (a go.mod under a walked tree).
+// Nested apps like examples/ferry are their own modules; skipping them hid
+// their snapshots when the tester was launched from the parent module.
+// No go list — pure filesystem.
 func moduleDirs(root string) []string {
 	uses := goWorkUses(root)
+	var seeds []string
 	if len(uses) == 0 {
-		return []string{root}
-	}
-	var out []string
-	for _, u := range uses {
-		if filepath.IsAbs(u) {
-			out = append(out, u)
-		} else {
-			out = append(out, filepath.Join(root, u))
+		seeds = []string{root}
+	} else {
+		for _, u := range uses {
+			if filepath.IsAbs(u) {
+				seeds = append(seeds, u)
+			} else {
+				seeds = append(seeds, filepath.Join(root, u))
+			}
 		}
+	}
+	return expandNestedModules(seeds)
+}
+
+// expandNestedModules walks each seed and appends directories that contain
+// their own go.mod (ferry, see_pprof, …). Dedupes so a go.work use that is
+// also nested under another use is walked once.
+func expandNestedModules(seeds []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	var add func(string)
+	add = func(modDir string) {
+		abs, err := filepath.Abs(modDir)
+		if err != nil {
+			return
+		}
+		st, err := os.Stat(abs)
+		if err != nil || !st.IsDir() {
+			return
+		}
+		if seen[abs] {
+			return
+		}
+		seen[abs] = true
+		out = append(out, abs)
+		_ = filepath.WalkDir(abs, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || !d.IsDir() {
+				return nil
+			}
+			if path == abs {
+				return nil
+			}
+			if skipWalkDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
+				add(path)
+				return filepath.SkipDir
+			}
+			return nil
+		})
+	}
+	for _, s := range seeds {
+		add(s)
 	}
 	return out
 }
@@ -147,6 +197,70 @@ func pkgHasSnapshotMarker(pkgDir string) bool {
 	return false
 }
 
+func pkgHasDriveMarker(pkgDir string) bool {
+	ents, err := os.ReadDir(pkgDir)
+	if err != nil {
+		return false
+	}
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(pkgDir, name))
+		if err != nil {
+			continue
+		}
+		if bytes.Contains(data, driveTestMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+// driveTestNames is Test* functions defined in *_test.go files that mention
+// drive.Start (the windowed drive tests, not other tests in the same package).
+func driveTestNames(pkgDir string) map[string]bool {
+	ents, err := os.ReadDir(pkgDir)
+	if err != nil {
+		return nil
+	}
+	fset := token.NewFileSet()
+	out := map[string]bool{}
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		path := filepath.Join(pkgDir, name)
+		data, err := os.ReadFile(path)
+		if err != nil || !bytes.Contains(data, driveTestMarker) {
+			continue
+		}
+		f, err := parser.ParseFile(fset, path, data, 0)
+		if err != nil {
+			continue
+		}
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || fn.Name == nil {
+				continue
+			}
+			n := fn.Name.Name
+			if strings.HasPrefix(n, "Test") && n != "TestMain" {
+				out[n] = true
+			}
+		}
+	}
+	return out
+}
+
 // importPathFor joins the module path with a path relative to the module root.
 func importPathFor(modPath, relFromMod string) string {
 	relFromMod = filepath.ToSlash(relFromMod)
@@ -183,17 +297,32 @@ func discoverPackages(root string) ([]*PackageItem, error) {
 				if skipWalkDir(d.Name()) {
 					return filepath.SkipDir
 				}
-				// Nested module not listed as its own walk root.
+				// Nested modules are their own walk roots (see moduleDirs).
 				if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
 					return filepath.SkipDir
 				}
 			}
-			if seen[path] || !pkgHasSnapshotMarker(path) {
+			snap := pkgHasSnapshotMarker(path)
+			drv := pkgHasDriveMarker(path)
+			if seen[path] || (!snap && !drv) {
 				return nil
 			}
 			tests, err := listTests(path)
 			if err != nil || len(tests) == 0 {
 				return nil
+			}
+			driveNames := driveTestNames(path)
+			if drv && !snap {
+				var only []string
+				for _, n := range tests {
+					if driveNames[n] {
+						only = append(only, n)
+					}
+				}
+				tests = only
+				if len(tests) == 0 {
+					return nil
+				}
 			}
 			seen[path] = true
 			// Rel is the path used for `go test ./…` under the scan root.
@@ -207,13 +336,14 @@ func discoverPackages(root string) ([]*PackageItem, error) {
 				relFromMod = "."
 			}
 			ip := importPathFor(modPath, relFromMod)
-			pkg := &PackageItem{Dir: path, ImportPath: ip, Rel: rel}
+			pkg := &PackageItem{Dir: path, ImportPath: ip, Rel: rel, DriveOnly: drv && !snap}
 			for _, name := range tests {
 				pkg.Tests = append(pkg.Tests, &TestItem{
 					PkgDir:     path,
 					ImportPath: ip,
 					Name:       name,
 					Status:     statusUnknown,
+					Drive:      driveNames[name],
 				})
 			}
 			pkgs = append(pkgs, pkg)
@@ -221,7 +351,7 @@ func discoverPackages(root string) ([]*PackageItem, error) {
 		})
 	}
 	if len(pkgs) == 0 {
-		return nil, fmt.Errorf("no packages with snapshot markers in *_test.go under %s", root)
+		return nil, fmt.Errorf("no packages with snapshot or drive tests in *_test.go under %s", root)
 	}
 	// Stable tree order (WalkDir is already lexical per module; multi-module
 	// workspaces may interleave — sort by Rel).

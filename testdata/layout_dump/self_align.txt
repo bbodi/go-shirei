@@ -1,0 +1,7 @@
+d=0 orig=0,0 size=320,140 screen=0,0,320,140 content=300,80 scroll=0,0 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0
+d=1 orig=0,0 size=300,80 screen=0,0,300,80 content=300,80 scroll=0,0 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0
+d=2 orig=0,0 size=300,80 screen=0,0,300,80 content=184,40 scroll=0,0 pad=10,10,10,10 corners=0,0,0,0 border=0 alpha=0
+d=3 orig=10,30 size=40,20 screen=10,30,40,20 content=0,0 scroll=0,0 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0
+d=3 orig=58,20 size=40,40 screen=58,20,40,40 content=0,0 scroll=0,0 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0
+d=3 orig=106,40 size=40,20 screen=106,40,40,20 content=0,0 scroll=0,0 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0
+d=3 orig=154,25 size=40,30 screen=154,25,40,30 content=0,0 scroll=0,0 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0

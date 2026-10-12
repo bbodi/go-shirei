@@ -8,6 +8,7 @@ package main
 // `demo14 --png out.png` renders one frame headlessly and exits.
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -31,13 +32,15 @@ var (
 	long     = strings.Repeat("the quick brown fox jumps over the lazy dog ", 4)
 	notes    = "wrapping paragraph with English and 日本語 text. keep typing to watch the box scroll while the field stays four rows tall.\n\nempty line above; trailing newline below:\n"
 	capped   = "first line\nsecond line"
-	path  = func() string { home, _ := os.UserHomeDir(); return home }()
-	path2 = path
+	path     = func() string { home, _ := os.UserHomeDir(); return home }()
+	path2    = path
 )
 
 func main() {
-	if len(os.Args) >= 3 && os.Args[1] == "--png" {
-		if err := RenderToPNG(os.Args[2], winW, winH, frameFn); err != nil {
+	png := flag.String("png", "", "write one settled frame to PATH and exit")
+	flag.Parse()
+	if *png != "" {
+		if err := RenderToPNG(*png, winW, winH, frameFn); err != nil {
 			fmt.Fprintln(os.Stderr, "render to png failed:", err)
 			os.Exit(1)
 		}

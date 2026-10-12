@@ -62,10 +62,10 @@ func RootView() {
 		Container(Attrs(Gap(6)), func() {
 			fieldLabel("Platform")
 			Container(Attrs(Row, CrossMid, Gap(12), Wrap), func() {
-				SegmentedControl(&cfg.Platform,
-					Cell("iOS", platformIOS),
-					Cell("Android", platformAndroid),
-				)
+				SegmentedControl(&cfg.Platform, func() {
+					SegmentedCell("iOS", platformIOS)
+					SegmentedCell("Android", platformAndroid)
+				})
 			})
 			if cfg.Platform == platformIOS && runtime.GOOS != "darwin" {
 				Label("iOS builds require macOS + Xcode.",
@@ -229,7 +229,7 @@ func RootView() {
 		} else {
 			attrs := DefaultTextStyle()
 			attrs.FontSize = 11
-			attrs.FontFamilies = Monospace
+			attrs.SetFontFamilies(Monospace...)
 			attrs.TextColor = Vec4{0, 0, 15, 1}
 			LogView(runner.Ring(), attrs)
 		}
@@ -240,10 +240,10 @@ func iosTargetPanel() {
 	Container(Attrs(Gap(6)), func() {
 		fieldLabel("Target")
 		Container(Attrs(Row, CrossMid, Gap(12), Wrap), func() {
-			SegmentedControl(&cfg.IOSTarget,
-				Cell("Device", "device"),
-				Cell("Simulator", "sim"),
-			)
+			SegmentedControl(&cfg.IOSTarget, func() {
+				SegmentedCell("Device", "device")
+				SegmentedCell("Simulator", "sim")
+			})
 			if cfg.IOSTarget == "sim" {
 				name := cfg.DeviceName
 				if name == "" {
@@ -386,10 +386,10 @@ func androidDevicePanel(devices []ADBDevice, devsReady bool, devsErr error) {
 					}
 				}
 			})
-			SegmentedControl(&cfg.Arch,
-				Cell("arm64", "arm64"),
-				Cell("arm 32-bit", "arm"),
-			)
+			SegmentedControl(&cfg.Arch, func() {
+				SegmentedCell("arm64", "arm64")
+				SegmentedCell("arm 32-bit", "arm")
+			})
 		})
 		switch {
 		case !devsReady:

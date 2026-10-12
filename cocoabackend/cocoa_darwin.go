@@ -1,22 +1,17 @@
 //go:build darwin && !ios
 
 // Package cocoabackend is a direct-macOS (AppKit) backend for shirei. AppKit
-// provides the window, run loop, and input; all rasterization is done by shirei's
-// core software renderer, which rasterizes each frame straight into an IOSurface
-// that is set as a CALayer's contents — the window server composites it on the GPU
-// with no per-frame CPU copy. It is an alternative to giobackend.
+// provides the window, run loop, and input. Rasterization writes an IOSurface
+// that is set as a CALayer's contents — the window server composites it with no
+// per-frame CPU copy. Metal (shirei/gpurender) is the default compositor when
+// built with cgo; SHIREI_GPU=0 or a CGO_ENABLED=0 build uses the software
+// renderer. Init failure also falls back.
 package cocoabackend
 
-/*
-#cgo CFLAGS: -Wno-deprecated-declarations
-#cgo LDFLAGS: -framework Cocoa -framework QuartzCore -framework IOSurface
-#include <stdlib.h>
-#include "cocoa.h"
-*/
-import "C"
-
 import (
+	"fmt"
 	"image"
+	"os"
 	"runtime"
 	"time"
 	"unicode/utf16"
@@ -25,6 +20,7 @@ import (
 	"github.com/cli/browser"
 	g "go.hasen.dev/generic"
 	"go.hasen.dev/shirei"
+	"go.hasen.dev/shirei/gpurender"
 	"go.hasen.dev/shirei/internal/iconimg"
 	"go.hasen.dev/shirei/internal/qwerty"
 )
@@ -40,8 +36,15 @@ var (
 	winIconImg  *image.NRGBA
 	winW        int
 	winH        int
+	winQuiet    bool
 	frameFn     shirei.FrameFn
 )
+
+// SetupQuiet maps the window without activating the app or making it key.
+// Call before Run.
+func SetupQuiet() {
+	winQuiet = true
+}
 
 // SetupWindow records the window parameters. The window is created in Run, on
 // the main thread.
@@ -77,40 +80,55 @@ func init() {
 
 // Run opens the window and runs the AppKit event loop. It must be called
 // from the program's main goroutine (AppKit requires the main thread) and
-// does not return until the app exits. System fonts are initialized by
-// shirei on the first frame (RunFrameFn), not here.
+// does not return: quit paths call generic.ExitWithCleanup so AddExitCleanup
+// handlers run. AppKit [NSApp terminate:] would otherwise exit without
+// returning to Go. System fonts are initialized by shirei on the first
+// frame (RunFrameFn), not here.
 func Run(fn shirei.FrameFn) {
-	// Redundant with the init() lock above (which is the actual guarantee), but
-	// harmless and documents intent.
 	runtime.LockOSThread()
 
 	frameFn = fn
+	shirei.SetBackendWake(requestRedraw)
 
 	shirei.GetHost().GlyphCacheBudgetBytes = glyphCacheBudget
 	shirei.GetHost().EscapeHatchBackendContext = Context{}
 
-	ctitle := C.CString(winTitle)
-	defer C.free(unsafe.Pointer(ctitle))
-	C.cocoa_setupWindow(ctitle, C.int(winW), C.int(winH))
+	setupWindow(winTitle, winW, winH)
 	if winIconImg != nil {
 		b := winIconImg.Bounds()
-		C.cocoa_setAppIconRGBA((*C.uchar)(unsafe.Pointer(&winIconImg.Pix[0])),
-			C.int(b.Dx()), C.int(b.Dy()))
+		setAppIconRGBA(winIconImg.Pix, b.Dx(), b.Dy())
 	} else if winIconPath != "" {
-		cicon := C.CString(winIconPath)
-		C.cocoa_setAppIcon(cicon)
-		C.free(unsafe.Pointer(cicon))
+		setAppIcon(winIconPath)
 	}
-	C.cocoa_enable_zerocopy()
-	C.cocoa_run()
+	enableZerocopy()
+	if g.EnvFalsy("SHIREI_GPU") {
+		fmt.Fprintln(os.Stderr, "shirei: software renderer (SHIREI_GPU=0)")
+	} else if err := gpurender.Init(); err != nil {
+		fmt.Fprintf(os.Stderr, "shirei: software renderer (%v)\n", err)
+	} else {
+		gpuOK = true
+		gpurender.SetCompleteFunc(gpuPresentComplete)
+	}
+	runApp()
+	g.ExitWithCleanup(0)
 }
+
+func exitWithCleanup() {
+	g.ExitWithCleanup(0)
+}
+
+// gpuOK is set once at Run if Metal init succeeds and SHIREI_GPU is not 0.
+var gpuOK bool
 
 // IOSurface present pool. A few surfaces are rotated so we never render into the
 // one the compositor is currently reading (IOSurfaceIsInUse). Static frames present
 // nothing — the layer keeps showing the last surface.
 type ioSurface struct {
-	ref  unsafe.Pointer
-	w, h int
+	ref         unsafe.Pointer
+	w, h        int
+	gpuBusy     bool
+	pendingHash uint64
+	gpuSeq      uint64
 }
 
 var (
@@ -120,35 +138,13 @@ var (
 	presentH      int
 	havePresented bool
 
-	// lastPresentedHash is the content hash of the frame currently on screen. The
-	// present skips when the new frame's hash equals it — the renderer's proof that
-	// nothing needs to be drawn. Tracked against the PRESENTED frame (not the last
-	// produced one) so it stays correct when produce and present are not 1:1: a
-	// tear-defer or two produces collapsing into one present would make a
-	// produced-vs-produced comparison skip a frame that never reached the screen.
 	lastPresentedHash uint64
-
-	// presentDeferred: the last present found no free surface and postponed
-	// itself to avoid tearing. Until it succeeds, the pending frame's content is
-	// not yet on screen, so the unchanged-frame skip must not short-circuit.
-	presentDeferred bool
+	presentDeferred   bool
+	gpuSubmitSeq      uint64
+	gpuPresentedSeq   uint64
 )
 
-// shireiRenderAndPresent renders the stashed frame's surfaces into an
-// IOSurface (the actual rasterization work — this is where a profile's
-// render time lands) and hands it to the window server. Only that final
-// handoff is "zero copy": the IOSurface becomes the CALayer's contents
-// directly, so the compositor reads the same memory we rendered into —
-// no per-frame buffer copy. (The function was historically named
-// shireiPresentZeroCopy after that strategy, which read as if the whole
-// function copied nothing.)
-//
-//export shireiRenderAndPresent
-func shireiRenderAndPresent(source C.int) {
-	t0 := time.Now()
-	defer func() { perfRecordPaint(time.Since(t0)) }()
-	perfRecordPresentSource(int(source))
-
+func renderAndPresent() {
 	scale := shirei.GetHost().WindowScale
 	if scale <= 0 {
 		scale = 1
@@ -159,67 +155,83 @@ func shireiRenderAndPresent(source C.int) {
 		return
 	}
 
-	// The frame on screen already shows this exact content: leave the layer as is.
-	// The compositor keeps displaying it — idle is free, regardless of whether the
-	// loop was kept awake (NextFrameRequested). (Unless a present is still deferred:
-	// then this content isn't on screen yet and we must go through.)
 	if havePresented && frameHash == lastPresentedHash && dw == presentW && dh == presentH && !presentDeferred {
-		perfRecordPresentSkip()
+		shirei.EmitFrameMetrics()
+		return
+	}
+	if gpuOK && gpuInFlightHash(frameHash) {
+		shirei.EmitFrameMetrics()
 		return
 	}
 
 	ensureSurfacePool(dw, dh)
-	s := pickFreeSurface()
-	if s == nil {
-		// Every off-screen surface is still held by the compositor. Writing one
-		// now would race its scan-out and tear the frame, so defer to the next
-		// tick (the layer keeps showing the last frame meanwhile) and keep the
-		// render loop awake so we actually retry.
+	slot := pickFreeSurface()
+	if slot == nil {
 		presentDeferred = true
-		C.cocoa_setWantsFrame(1)
+		setWantsFrame(true)
 		return
 	}
 	presentDeferred = false
 
-	perfRecordSurfaces(frameSurfaces) // classify before timing render, so its overhead is excluded
+	if gpuOK {
+		err := gpurender.Render(slot.ref, dw, dh, scale, frameSurfaces, frameGlyphRuns, frameGlyphsAdded, frameGlyphsEvicted, false)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gpurender: %v; software this frame\n", err)
+			renderSoftware(slot.ref, dw, dh, scale, frameSurfaces, frameGlyphRuns)
+		} else {
+			gpuSubmitSeq++
+			slot.gpuBusy = true
+			slot.pendingHash = frameHash
+			slot.gpuSeq = gpuSubmitSeq
+			t := &shirei.ActiveUI().FrameTimings
+			t.Painted = true
+			t.PaintEnd = time.Now()
+			shirei.EmitFrameMetrics()
+			return
+		}
+	} else {
+		renderSoftware(slot.ref, dw, dh, scale, frameSurfaces, frameGlyphRuns)
+	}
 
-	var cstride C.int
-	tLock := time.Now()
-	base := C.iosurface_lock(s, &cstride)
-	perfRecordLock(time.Since(tLock))
+	setLayerContents(slot.ref)
+	lastPresented = slot.ref
+	lastPresentedHash = frameHash
+	presentW, presentH, havePresented = dw, dh, true
+	t := &shirei.ActiveUI().FrameTimings
+	t.Painted = true
+	t.PaintEnd = time.Now()
+	shirei.EmitFrameMetrics()
+}
+
+func renderSoftware(s unsafe.Pointer, dw, dh int, scale float32, surfaces []shirei.Surface, runs []shirei.GlyphRun) {
+	base, stride := ioSurfaceLockBuf(s)
 	if base == nil {
 		return
 	}
-	stride := int(cstride)
 	buf := unsafe.Slice((*byte)(base), stride*dh)
-	tRender := time.Now()
-	softRenderer.RenderInto(buf, stride, dw, dh, scale, frameSurfaces)
-	perfRecordRender(time.Since(tRender))
-	tUnlock := time.Now()
-	C.iosurface_unlock(s)
-	perfRecordUnlock(time.Since(tUnlock))
-
-	tSet := time.Now()
-	C.cocoa_set_layer_contents(s)
-	perfRecordSetLayer(time.Since(tSet))
-	lastPresented = s
-	lastPresentedHash = frameHash
-	presentW, presentH, havePresented = dw, dh, true
+	softRenderer.RenderInto(buf, stride, dw, dh, scale, surfaces, runs)
+	ioSurfaceUnlockBuf(s)
 }
 
-// ensureSurfacePool (re)creates the surfaces when the device size changes.
 func ensureSurfacePool(w, h int) {
 	if len(surfacePool) > 0 && surfacePool[0].w == w && surfacePool[0].h == h {
 		return
 	}
+	if gpuOK {
+		gpurender.WaitIdle()
+	}
 	for _, s := range surfacePool {
-		C.iosurface_release(s.ref)
+		if gpuOK {
+			gpurender.Forget(s.ref)
+		}
+		ioSurfaceRelease(s.ref)
 	}
 	surfacePool = surfacePool[:0]
 	lastPresented = nil
 	havePresented = false
+	gpuPresentedSeq = gpuSubmitSeq
 	for i := 0; i < 3; i++ {
-		ref := unsafe.Pointer(C.iosurface_create(C.int(w), C.int(h)))
+		ref := ioSurfaceCreateBuf(w, h)
 		if ref == nil {
 			continue
 		}
@@ -227,58 +239,83 @@ func ensureSurfacePool(w, h int) {
 	}
 }
 
-// pickFreeSurface returns a surface the compositor is not reading and that is not
-// the one currently on screen, so writing it cannot tear the displayed frame. It
-// returns nil when every off-screen surface is still in use; the caller then
-// defers the present rather than writing a surface mid scan-out.
-func pickFreeSurface() unsafe.Pointer {
-	for _, s := range surfacePool {
-		if s.ref != lastPresented && C.iosurface_in_use(s.ref) == 0 {
-			perfRecordPick(pickClean)
-			return s.ref
+func gpuInFlightHash(h uint64) bool {
+	for i := range surfacePool {
+		s := &surfacePool[i]
+		if s.gpuBusy && s.pendingHash == h {
+			return true
 		}
 	}
-	perfRecordPick(pickDefer)
+	return false
+}
+
+func gpuPresentComplete(surf unsafe.Pointer) {
+	var slot *ioSurface
+	for i := range surfacePool {
+		if surfacePool[i].ref == surf {
+			slot = &surfacePool[i]
+			break
+		}
+	}
+	if slot == nil || !slot.gpuBusy {
+		return
+	}
+	if slot.gpuSeq < gpuPresentedSeq {
+		slot.gpuBusy = false
+		return
+	}
+	setLayerContents(slot.ref)
+	lastPresented = slot.ref
+	lastPresentedHash = slot.pendingHash
+	presentW, presentH, havePresented = slot.w, slot.h, true
+	gpuPresentedSeq = slot.gpuSeq
+	slot.gpuBusy = false
+}
+
+func pickFreeSurface() *ioSurface {
+	for i := range surfacePool {
+		s := &surfacePool[i]
+		if s.ref == lastPresented || s.gpuBusy || ioSurfaceInUseBuf(s.ref) {
+			continue
+		}
+		return s
+	}
 	return nil
 }
 
-// Frame production is decoupled from presenting. Input events and the animation
-// tick call shireiProduceFrame (synchronously, in Go) to run one shirei frame and
-// stash its surfaces; shireiRenderAndPresent then renders them into an IOSurface and
-// sets it as the layer's contents. This way each input event is consumed by its own
-// frame regardless of when AppKit repaints.
 var (
-	frameSurfaces   []shirei.Surface // copy of the last produced frame's surfaces
-	lastProducedW   float32
-	lastProducedH   float32
-	haveFrame       bool
-	pendingText     string // committed text from NSTextInputClient, flushed next frame
-	pendingPaste    string // clipboard text read after a paste request
-	hasPendingPaste bool
-
-	// frameHash is the content hash (FrameOutputData.SurfacesHash) of the last
-	// produced frame. The present compares it against the hash of the frame already
-	// on screen to skip identical frames (see shireiRenderAndPresent).
-	frameHash uint64
-
-	softRenderer shirei.SoftRenderer // rasterizes into the IOSurface (RenderInto)
+	frameSurfaces      []shirei.Surface
+	frameGlyphRuns     []shirei.GlyphRun
+	frameGlyphsAdded   []shirei.GlyphKey
+	frameGlyphsEvicted []shirei.GlyphKey
+	lastProducedW      float32
+	lastProducedH      float32
+	haveFrame          bool
+	pendingText        string
+	pendingPaste       string
+	hasPendingPaste    bool
+	frameHash          uint64
+	softRenderer       shirei.SoftRenderer
 )
 
-//export shireiProduceFrame
-func shireiProduceFrame(w C.double, h C.double) {
+func produceFrame(w, h float64) {
 	shirei.GetHost().WindowSize = shirei.Vec2{float32(w), float32(h)}
-	shirei.GetHost().WindowScale = float32(C.cocoa_backingScaleFactor())
+	shirei.GetHost().WindowScale = float32(backingScale())
 	lastProducedW, lastProducedH = float32(w), float32(h)
 
 	flushPendingFrameText()
+	flushAccessAction()
 
-	t0 := time.Now()
 	out := shirei.RunFrameFn(frameFn)
-	perfRecordProduce(time.Since(t0))
+	if out.AccessChanged {
+		updateAccess(out.Access)
+	}
 
-	// Surface is a flat value type, so a copy stays valid after the next frame
-	// reuses shirei's internal surface buffer.
+	clear(frameSurfaces) // Release immutable glyph data from the previous snapshot.
 	frameSurfaces = append(frameSurfaces[:0], out.Surfaces...)
+	frameGlyphRuns = append(frameGlyphRuns[:0], out.GlyphRuns...)
+	frameGlyphsAdded = append(frameGlyphsAdded[:0], out.GlyphsAdded...)
+	frameGlyphsEvicted = append(frameGlyphsEvicted[:0], out.GlyphsEvicted...)
 	haveFrame = true
 
 	if out.Copy != "" {
@@ -287,24 +324,13 @@ func shireiProduceFrame(w C.double, h C.double) {
 	if out.Paste {
 		pendingPaste = getClipboard()
 		hasPendingPaste = true
-		C.cocoa_requestRedraw()
+		requestRedraw()
 	}
 	if out.OpenURL != "" {
 		openURL(out.OpenURL)
 	}
 
-	var wf C.int
-	if out.NextFrameRequested {
-		wf = 1
-	}
-	C.cocoa_setWantsFrame(wf)
-
-	// Record this frame's content hash; the present skips when it matches what is
-	// already on screen. Deliberately NOT gated on NextFrameRequested: an animation,
-	// blink timer, or pending async decode keeps the loop awake, but if the surfaces
-	// it produces are identical there is still nothing to present, so the renderer
-	// stays idle. The hash covers image generations (images.go), so an in-place
-	// decode is never mistaken for "unchanged".
+	setWantsFrame(out.NextFrameRequested || len(accessPending) > 0)
 	frameHash = out.SurfacesHash
 }
 
@@ -320,57 +346,16 @@ func flushPendingFrameText() {
 	}
 }
 
-// shireiNeedsProduce reports whether drawRect: must produce a frame itself
-// (no frame yet, or the view was resized) rather than just repaint the stash.
-//
-//export shireiNeedsProduce
-func shireiNeedsProduce(w C.double, h C.double) C.int {
-	if !haveFrame || float32(w) != lastProducedW || float32(h) != lastProducedH {
-		return 1
-	}
-	return 0
+func needsProduce(w, h float64) bool {
+	return !haveFrame || float32(w) != lastProducedW || float32(h) != lastProducedH
 }
 
-//export shireiFrameRequested
-func shireiFrameRequested() C.int {
-	if shirei.FrameRequested() {
-		return 1
-	}
-	return 0
-}
+func frameRequested() bool { return shirei.FrameRequested() }
 
-//export shireiCaretX
-func shireiCaretX() C.double {
-	return C.double(shirei.GetHost().CaretPos[0])
-}
+func caretX() float64      { return float64(shirei.GetHost().CaretPos[0]) }
+func caretY() float64      { return float64(shirei.GetHost().CaretPos[1]) }
+func caretHeight() float64 { return float64(shirei.GetHost().CaretHeight) }
 
-//export shireiCaretY
-func shireiCaretY() C.double {
-	return C.double(shirei.GetHost().CaretPos[1])
-}
-
-//export shireiCaretHeight
-func shireiCaretHeight() C.double {
-	return C.double(shirei.GetHost().CaretHeight)
-}
-
-func setClipboard(s string) {
-	cs := C.CString(s)
-	C.cocoa_setClipboard(cs)
-	C.free(unsafe.Pointer(cs))
-}
-
-func getClipboard() string {
-	cs := C.cocoa_getClipboard()
-	if cs == nil {
-		return ""
-	}
-	s := C.GoString(cs)
-	C.free(unsafe.Pointer(cs))
-	return s
-}
-
-// openURL opens url in the system browser (FrameOutputData.OpenURL). Errors ignored.
 func openURL(url string) {
 	if url == "" {
 		return
@@ -378,11 +363,6 @@ func openURL(url string) {
 	_ = browser.OpenURL(url)
 }
 
-// -----------------------------------------------------------------------------
-//  Input (called from the NSView's event overrides)
-// -----------------------------------------------------------------------------
-
-// mouse actions, matching the ObjC side
 const (
 	mouseMove = 0
 	mouseDown = 1
@@ -390,8 +370,7 @@ const (
 	mouseDrag = 3
 )
 
-//export shireiMouse
-func shireiMouse(x, y C.double, action, button C.int) {
+func onMouse(x, y float64, action, button int) {
 	np := shirei.Vec2{float32(x), float32(y)}
 	prev := shirei.GetInputState().MousePoint
 	shirei.GetFrameInput().Motion = shirei.Vec2Add(shirei.GetFrameInput().Motion, shirei.Vec2Sub(np, prev))
@@ -406,21 +385,16 @@ func shireiMouse(x, y C.double, action, button C.int) {
 	}
 }
 
-//export shireiScroll
-func shireiScroll(dx, dy C.double) {
+func onScroll(dx, dy float64) {
 	shirei.GetFrameInput().Scroll = shirei.Vec2Add(shirei.GetFrameInput().Scroll,
 		shirei.Vec2{float32(dx), float32(dy)})
 }
 
-//export shireiWindowFocus
-func shireiWindowFocus(focused C.int) {
-	shirei.GetHost().WindowFocused = focused != 0
-	// re-render once so focus-only affordances (the text caret) show/hide; the loop
-	// then sleeps again if nothing else is animating.
+func onWindowFocus(focused bool) {
+	shirei.GetHost().WindowFocused = focused
 	shirei.RequestNextFrame()
 }
 
-// NSEvent.modifierFlags bits (stable AppKit values).
 const (
 	nsShift   = 1 << 17
 	nsControl = 1 << 18
@@ -428,26 +402,21 @@ const (
 	nsCommand = 1 << 20
 )
 
-//export shireiSetModifiers
-func shireiSetModifiers(flags C.uint) {
-	f := uint(flags)
+func onModifiers(flags uint) {
 	var m shirei.Modifiers
-	if f&nsShift != 0 {
+	if flags&nsShift != 0 {
 		m |= shirei.ModShift
 	}
-	if f&nsControl != 0 {
+	if flags&nsControl != 0 {
 		m |= shirei.ModCtrl
 	}
-	if f&nsOption != 0 {
+	if flags&nsOption != 0 {
 		m |= shirei.ModAlt
 	}
-	if f&nsCommand != 0 {
+	if flags&nsCommand != 0 {
 		m |= shirei.ModCmd
 	}
 	shirei.GetInputState().Modifiers = m
-
-	// modifier keys arrive via flagsChanged, not keyDown, so mirror them into
-	// DownKeys (shirei widgets check e.g. DownKeys contains KeyShift).
 	syncModKey(m, shirei.ModShift, shirei.KeyShift)
 	syncModKey(m, shirei.ModCtrl, shirei.KeyCtrl)
 	syncModKey(m, shirei.ModAlt, shirei.KeyAlt)
@@ -462,16 +431,17 @@ func syncModKey(m, bit shirei.Modifiers, k shirei.KeyCode) {
 	}
 }
 
-func keyDown(vkey int, bare string) {
+func keyDown(vkey int, bare string) { onKeyDown(vkey, bare) }
+
+func setCompositionFromUTF16Offsets(text string, startUTF16, endUTF16 int) {
+	onSetComposition(text, startUTF16, endUTF16)
+}
+
+func onKeyDown(vkey int, bare string) {
 	if code := mapVKey(uint16(vkey), bare); code != shirei.KeyCodeNone {
 		shirei.GetFrameInput().Key = code
 		g.SliceAddUniq(&shirei.GetInputState().DownKeys, code)
 	}
-}
-
-//export shireiKeyDown
-func shireiKeyDown(vkey C.int, cbare *C.char) {
-	keyDown(int(vkey), C.GoString(cbare))
 }
 
 func queueCommittedText(text string) {
@@ -480,10 +450,7 @@ func queueCommittedText(text string) {
 	}
 }
 
-//export shireiCommitText
-func shireiCommitText(cchars *C.char) {
-	queueCommittedText(C.GoString(cchars))
-}
+func onCommitText(text string) { queueCommittedText(text) }
 
 func utf16OffsetToRuneOffset(s string, units int) int {
 	if units <= 0 {
@@ -496,7 +463,7 @@ func utf16OffsetToRuneOffset(s string, units int) int {
 	return len(utf16.Decode(u16[:units]))
 }
 
-func setCompositionFromUTF16Offsets(text string, startUTF16 int, endUTF16 int) {
+func onSetComposition(text string, startUTF16, endUTF16 int) {
 	start := utf16OffsetToRuneOffset(text, startUTF16)
 	end := utf16OffsetToRuneOffset(text, endUTF16)
 	if start > end {
@@ -507,14 +474,8 @@ func setCompositionFromUTF16Offsets(text string, startUTF16 int, endUTF16 int) {
 	shirei.RequestNextFrame()
 }
 
-//export shireiSetComposition
-func shireiSetComposition(cchars *C.char, startUTF16 C.int, endUTF16 C.int) {
-	setCompositionFromUTF16Offsets(C.GoString(cchars), int(startUTF16), int(endUTF16))
-}
-
-//export shireiKeyUp
-func shireiKeyUp(vkey C.int, cbare *C.char) {
-	if code := mapVKey(uint16(vkey), C.GoString(cbare)); code != shirei.KeyCodeNone {
+func onKeyUp(vkey int, bare string) {
+	if code := mapVKey(uint16(vkey), bare); code != shirei.KeyCodeNone {
 		g.SliceRemove(&shirei.GetInputState().DownKeys, code)
 	}
 }
@@ -524,23 +485,17 @@ func isPrintable(s string) bool {
 		return false
 	}
 	r := []rune(s)[0]
-	// NSEvent delivers function keys (arrows, Home/End, page keys, F1-F12,
-	// forward delete) as private-use code points in the reserved
-	// 0xF700-0xF8FF range: key identity, not typed text. Relaying them as
-	// Text inserts invisible glyphless runes into text inputs (and the
-	// caret then renders at end of line).
 	if r >= 0xF700 && r <= 0xF8FF {
 		return false
 	}
 	return r >= 0x20 && r != 0x7f
 }
 
-// Cocoa virtual key codes (hardware, layout-independent) for non-text keys.
 const (
 	vkReturn        = 0x24
 	vkTab           = 0x30
 	vkSpace         = 0x31
-	vkDelete        = 0x33 // backspace
+	vkDelete        = 0x33
 	vkEscape        = 0x35
 	vkKeypadEnter   = 0x4C
 	vkForwardDelete = 0x75
@@ -552,28 +507,20 @@ const (
 	vkRight         = 0x7C
 	vkDown          = 0x7D
 	vkUp            = 0x7E
-
-	// function keys (HIToolbox kVK_F* values)
-	vkF1  = 0x7A
-	vkF2  = 0x78
-	vkF3  = 0x63
-	vkF4  = 0x76
-	vkF5  = 0x60
-	vkF6  = 0x61
-	vkF7  = 0x62
-	vkF8  = 0x64
-	vkF9  = 0x65
-	vkF10 = 0x6D
-	vkF11 = 0x67
-	vkF12 = 0x6F
+	vkF1            = 0x7A
+	vkF2            = 0x78
+	vkF3            = 0x63
+	vkF4            = 0x76
+	vkF5            = 0x60
+	vkF6            = 0x61
+	vkF7            = 0x62
+	vkF8            = 0x64
+	vkF9            = 0x65
+	vkF10           = 0x6D
+	vkF11           = 0x67
+	vkF12           = 0x6F
 )
 
-// mapVKey maps a Cocoa virtual key code to a shirei KeyCode. Special keys
-// and the whole writing block are matched by their (layout-independent)
-// virtual code — KeyW is the physical key at the US-QWERTY W position no
-// matter the active layout; typed text still honors the layout via the
-// separate Text path. Keys outside those tables fall back to
-// charactersIgnoringModifiers, uppercased for letters.
 func mapVKey(vk uint16, bare string) shirei.KeyCode {
 	switch vk {
 	case vkLeft:

@@ -274,7 +274,7 @@ func frameFn() {
 	ModAttrs(func(a *AttrSet) { a.Animations = 0 })
 
 	if mode.Drive && !verdictDone {
-		driveStep(LastFrameOutput().Surfaces)
+		driveStep(LastFrameSurfaces())
 		applyInput()
 	}
 

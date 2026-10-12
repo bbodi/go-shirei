@@ -13,6 +13,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"math"
 	"os"
@@ -176,46 +177,40 @@ func handleKeyboard() {
 	}
 }
 
+func parseVoice(name string) VoiceKind {
+	switch name {
+	case "flute":
+		return VoiceFlute
+	case "sine":
+		return VoiceSine
+	default:
+		return VoiceString
+	}
+}
+
 func main() {
-	if len(os.Args) >= 3 && os.Args[1] == "--png" {
-		// `piano --png out.png` renders one settled frame headlessly and exits
-		if err := RenderToPNG(os.Args[2], winW, winH, RootView); err != nil {
+	png := flag.String("png", "", "write one settled frame to PATH and exit")
+	wav := flag.String("wav", "", "write a C major scale to PATH and exit")
+	play := flag.Bool("play", false, "play a C major scale through the default device and exit")
+	flag.Parse()
+	kind := parseVoice(flag.Arg(0))
+
+	if *png != "" {
+		if err := RenderToPNG(*png, winW, winH, RootView); err != nil {
 			fmt.Println("render failed:", err)
 			os.Exit(1)
 		}
 		return
 	}
-	if len(os.Args) >= 2 && os.Args[1] == "--play" {
-		// `piano --play [string|flute|sine]` plays the demo scale through the
-		// speakers using the same AudioQueue path as the GUI, then exits
-		kind := VoiceString
-		if len(os.Args) >= 3 {
-			switch os.Args[2] {
-			case "flute":
-				kind = VoiceFlute
-			case "sine":
-				kind = VoiceSine
-			}
-		}
+	if *play {
 		if err := playDemo(kind); err != nil {
 			fmt.Println("audio failed:", err)
 			os.Exit(1)
 		}
 		return
 	}
-	if len(os.Args) >= 3 && os.Args[1] == "--wav" {
-		// `piano --wav out.wav [string|flute|sine]` renders a C major scale
-		// offline through the same mixer and reports signal stats
-		kind := VoiceString
-		if len(os.Args) >= 4 {
-			switch os.Args[3] {
-			case "flute":
-				kind = VoiceFlute
-			case "sine":
-				kind = VoiceSine
-			}
-		}
-		if err := writeDemoWAV(os.Args[2], kind); err != nil {
+	if *wav != "" {
+		if err := writeDemoWAV(*wav, kind); err != nil {
 			fmt.Println("wav failed:", err)
 			os.Exit(1)
 		}

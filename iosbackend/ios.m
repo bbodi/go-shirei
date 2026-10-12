@@ -1,6 +1,7 @@
 // Objective-C side of the shirei iOS backend: a full-screen UIView driven by
-// CADisplayLink. Rasterization is done by shirei's core software renderer; this
-// side presents the BGRA buffer and routes touch + soft-keyboard / IME into Go.
+// CADisplayLink. Present is Metal into a CAMetalLayer (default) or a CPU BGRA
+// CGImage on CALayer.contents (Metal init failure). This side owns the window,
+// display link, and touch + soft-keyboard / IME routing into Go.
 //
 // IME (Japanese etc.): UITextInput with a thin document that only mirrors marked
 // (preedit) text — same contract as cocoabackend's NSTextInputClient. Marked
@@ -53,6 +54,9 @@ static int gAppliedOrientation = -1; // force first apply
 
 // Physical keyboard (GCKeyboard), not soft IME. Updated on connect/disconnect.
 static BOOL gHardwareKeyboard = NO;
+
+// Set by ios_set_metal before ios_attach. Chooses ShireiView.layerClass.
+static BOOL gUseMetal = NO;
 
 static void ios_layoutContentView(void);
 static void ios_applyOrientation(BOOL force);
@@ -339,12 +343,19 @@ static void ios_layoutContentView(void) {
 		gLastInputTime = CFAbsoluteTimeGetCurrent();
 	}
 
-	// Stale CALayer.contents: we are not a classic double-buffer swapchain, but
-	// the previous CGImage stays on the layer until the next produce. If the
-	// view/layout size changed first, Core Animation shows that old image
-	// scaled into the new bounds for one refresh (launch height glitch). Drop
-	// contents immediately; next tick paints at the new size.
-	if ((viewResized || layoutResized) && gView.layer.contents != nil) {
+	if (gUseMetal) {
+		if (viewResized) {
+			CGFloat s = gView.contentScaleFactor;
+			if (s < 1) {
+				s = 1;
+			}
+			((CAMetalLayer *)gView.layer).drawableSize =
+			    CGSizeMake(safe.size.width * s, safe.size.height * s);
+		}
+	} else if ((viewResized || layoutResized) && gView.layer.contents != nil) {
+		// Software present: the previous CGImage stays on the layer until the
+		// next produce. Drop it on resize so Core Animation does not stretch
+		// the old image into the new bounds for one refresh.
 		gView.layer.contents = nil;
 	}
 }
@@ -365,6 +376,10 @@ static void ios_layoutContentView(void) {
 @synthesize inputDelegate = _inputDelegate;
 @synthesize markedTextStyle = _markedTextStyle;
 
++ (Class)layerClass {
+	return gUseMetal ? [CAMetalLayer class] : [CALayer class];
+}
+
 - (instancetype)initWithFrame:(CGRect)frame {
 	self = [super initWithFrame:frame];
 	if (self) {
@@ -372,11 +387,18 @@ static void ios_layoutContentView(void) {
 		self.opaque = YES;
 		self.backgroundColor = [UIColor blackColor];
 		self.contentScaleFactor = [UIScreen mainScreen].scale;
-		// Disable implicit Core Animation on contents swaps (we set a new
-		// CGImage every frame). Gravity resize is default; combined with a
-		// stale image after bounds change it stretches the previous frame —
-		// ios_layoutContentView clears contents on resize to avoid that.
-		self.layer.actions = @{@"contents" : [NSNull null]};
+		if (gUseMetal) {
+			CAMetalLayer *ml = (CAMetalLayer *)self.layer;
+			ml.framebufferOnly = YES;
+			ml.opaque = YES;
+			ml.contentsScale = self.contentScaleFactor;
+			CGFloat s = self.contentScaleFactor;
+			ml.drawableSize = CGSizeMake(frame.size.width * s, frame.size.height * s);
+		} else {
+			// Disable implicit Core Animation on contents swaps (new CGImage
+			// every frame). ios_layoutContentView clears contents on resize.
+			self.layer.actions = @{@"contents" : [NSNull null]};
+		}
 		_doc = [NSMutableString string];
 		_selStart = 0;
 		_selEnd = 0;
@@ -1004,6 +1026,17 @@ static void ios_layoutContentView(void) {
 }
 @end
 
+void ios_set_metal(int on) {
+	gUseMetal = on ? YES : NO;
+}
+
+void *ios_metal_layer(void) {
+	if (!gUseMetal || !gView) {
+		return NULL;
+	}
+	return (__bridge void *)gView.layer;
+}
+
 void ios_attach(void) {
 	if (gWindow) {
 		return;
@@ -1043,6 +1076,15 @@ void ios_attach(void) {
 	       selector:@selector(keyboardFrameChanged:)
 	           name:UIKeyboardDidChangeFrameNotification
 	         object:nil];
+
+	// UIApplicationMain never returns to Go; flush AddExitCleanup on terminate.
+	[nc addObserverForName:UIApplicationWillTerminateNotification
+	                object:nil
+	                 queue:nil
+	            usingBlock:^(NSNotification *note) {
+		            (void)note;
+		            shireiExitWithCleanup();
+	            }];
 
 	// Hardware keyboard attach/detach (Bluetooth Magic Keyboard, Smart Keyboard, …).
 	if (@available(iOS 14.0, *)) {

@@ -32,6 +32,7 @@ func ResetInputSession() {
 	ui.focused = nil
 	ui.prevFocused = nil
 	ui.nextFocused = nil
+	ui.focusVisible = false
 	ui.lastClickTime = time.Time{}
 	g.Reset(&ui.lastClickPoint)
 	ui.clickStreak = 0
@@ -93,7 +94,7 @@ func RenderToImage(width, height int, fn FrameFn) *image.RGBA {
 	devW := int(Roundf32(float32(width) * HeadlessScale))
 	devH := int(Roundf32(float32(height) * HeadlessScale))
 	var rend SoftRenderer
-	fb := rend.Render(out.Surfaces, devW, devH, HeadlessScale)
+	fb := rend.Render(out.Surfaces, out.GlyphRuns, devW, devH, HeadlessScale)
 	return fb.ToRGBA()
 }
 

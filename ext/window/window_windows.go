@@ -19,7 +19,7 @@ var (
 	procGetSystemMetrics     = user32.NewProc("GetSystemMetrics")
 	procSetWindowPos         = user32.NewProc("SetWindowPos")
 	procSetWindowSubclass    = comctl32.NewProc("SetWindowSubclass")
-	procDefSubclassProc     = comctl32.NewProc("DefSubclassProc")
+	procDefSubclassProc      = comctl32.NewProc("DefSubclassProc")
 	procRemoveWindowSubclass = comctl32.NewProc("RemoveWindowSubclass")
 
 	winMu      sync.Mutex
@@ -132,6 +132,29 @@ func init() {
 			}
 			procSetWindowPos.Call(hwnd, 0, uintptr(rc.left), uintptr(rc.top), uintptr(newW), uintptr(newH), swpNoZOrder|swpNoActivate)
 		}
+	}
+
+	setPlatformSize = func(ctx shirei.BackendContext, w, h float32) {
+		c, ok := ctx.(win32backend.Context)
+		if !ok {
+			return
+		}
+		handle := c.HWND()
+		if handle == nil {
+			return
+		}
+		hwnd := uintptr(handle)
+
+		scale := shirei.GetHost().WindowScale
+		if scale <= 0 {
+			scale = 1
+		}
+		devW := int32(w*scale + 0.5)
+		devH := int32(h*scale + 0.5)
+
+		var rc winRect
+		procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+		procSetWindowPos.Call(hwnd, 0, uintptr(rc.left), uintptr(rc.top), uintptr(devW), uintptr(devH), swpNoZOrder|swpNoActivate)
 	}
 
 	setPlatformCenter = func(ctx shirei.BackendContext) {

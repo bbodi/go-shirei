@@ -271,7 +271,7 @@ func shirei_android_main() {
 		return err
 	}
 	logf("— adb install")
-	if err := runCmd(logf, adbCmd(adb, o.Serial, "install", "-r", finalAPK)); err != nil {
+	if err := runCmd(logf, adbCmd(adb, o.Serial, "install", "-r", "--no-incremental", finalAPK)); err != nil {
 		return fmt.Errorf("adb install: %w", err)
 	}
 	logf("— am start")

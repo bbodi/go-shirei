@@ -43,7 +43,7 @@ func TestNestedTablesRenderRows(t *testing.T) {
 		return []TableColumn[*peekEdge]{
 			{
 				Label: "Function",
-				Render: func(e *peekEdge) {
+				Cell: func(e *peekEdge) {
 					rowRects[e.Name] = shirei.GetScreenRect()
 					shirei.Label(e.Name)
 				},
@@ -51,7 +51,7 @@ func TestNestedTablesRenderRows(t *testing.T) {
 			},
 			{
 				Label: "Value", Width: 90, DefaultDesc: true,
-				Render: func(e *peekEdge) { shirei.Label("v") },
+				Cell: func(e *peekEdge) { shirei.Label("v") },
 				Less:   func(a, b *peekEdge) bool { return a.Value < b.Value },
 			},
 		}

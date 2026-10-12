@@ -26,6 +26,9 @@ func TestSetMinSizeDeferredWhenWindowNotReady(t *testing.T) {
 		hasPendingMinSize = false
 		pendingMinW = 0
 		pendingMinH = 0
+		hasPendingSize = false
+		pendingSizeW = 0
+		pendingSizeH = 0
 		pendingPlacement = placeNone
 		waiterActive = false
 		mu.Unlock()
@@ -136,6 +139,9 @@ func TestSetMinSizeNegativeAndCaching(t *testing.T) {
 		lastAppliedW = 0
 		lastAppliedH = 0
 		hasPendingMinSize = false
+		hasPendingSize = false
+		pendingSizeW = 0
+		pendingSizeH = 0
 		pendingPlacement = placeNone
 		waiterActive = false
 		mu.Unlock()
@@ -174,5 +180,55 @@ func TestSetMinSizeNegativeAndCaching(t *testing.T) {
 	}
 	if recordedW != 500 || recordedH != 400 {
 		t.Fatalf("expected 500,400, got %v,%v", recordedW, recordedH)
+	}
+}
+
+func TestSetSizeDeferredWhenWindowNotReady(t *testing.T) {
+	orig := shirei.GetHost().EscapeHatchBackendContext
+	origSize := setPlatformSize
+	defer func() {
+		shirei.GetHost().EscapeHatchBackendContext = orig
+		setPlatformSize = origSize
+		mu.Lock()
+		lastCtx = nil
+		hasPendingMinSize = false
+		hasPendingSize = false
+		pendingSizeW = 0
+		pendingSizeH = 0
+		pendingPlacement = placeNone
+		waiterActive = false
+		mu.Unlock()
+	}()
+
+	var callCount int
+	var recordedW, recordedH float32
+	setPlatformSize = func(ctx shirei.BackendContext, w, h float32) {
+		callCount++
+		recordedW = w
+		recordedH = h
+	}
+
+	shirei.GetHost().EscapeHatchBackendContext = nil
+
+	SetSize(320, 240)
+	if callCount != 0 {
+		t.Fatalf("expected 0 immediate calls before window is ready, got %d", callCount)
+	}
+
+	dummy := dummyContext{platform: "test"}
+	shirei.GetHost().EscapeHatchBackendContext = dummy
+
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	calls := callCount
+	w, h := recordedW, recordedH
+	mu.Unlock()
+
+	if calls != 1 {
+		t.Fatalf("expected 1 deferred SetSize call, got %d", calls)
+	}
+	if w != 320 || h != 240 {
+		t.Fatalf("expected 320, 240, got %v, %v", w, h)
 	}
 }

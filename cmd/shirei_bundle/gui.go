@@ -901,11 +901,11 @@ func iosPackagingFields(c *IOSConfig) {
 		})
 		Container(Attrs(Gap(3)), func() {
 			fieldLabel("Export method")
-			SegmentedControl(&c.Method,
-				Cell("Debugging", "debugging"),
-				Cell("App Store", "app-store-connect"),
-				Cell("Ad Hoc", "ad-hoc"),
-			)
+			SegmentedControl(&c.Method, func() {
+				SegmentedCell("Debugging", "debugging")
+				SegmentedCell("App Store", "app-store-connect")
+				SegmentedCell("Ad Hoc", "ad-hoc")
+			})
 			Label("App Store export may show a system keychain password dialog (Allow / Always Allow).",
 				FontSize(10), TextColor(0, 0, 50, 1))
 		})
@@ -939,10 +939,10 @@ func androidPackagingFields(c *AndroidConfig) {
 		})
 		Container(Attrs(Gap(3)), func() {
 			fieldLabel("ABI")
-			SegmentedControl(&c.Arch,
-				Cell("arm64", "arm64"),
-				Cell("arm 32-bit", "arm"),
-			)
+			SegmentedControl(&c.Arch, func() {
+				SegmentedCell("arm64", "arm64")
+				SegmentedCell("arm 32-bit", "arm")
+			})
 		})
 		Container(Attrs(Gap(3)), func() {
 			fieldLabel("Release directory")
@@ -2021,7 +2021,7 @@ func platformJobChrome(platform string) {
 					Container(Attrs(Viewport, Expand, Grow(1)), func() {
 						attrs := DefaultTextStyle()
 						attrs.FontSize = 11
-						attrs.FontFamilies = Monospace
+						attrs.SetFontFamilies(Monospace...)
 						attrs.TextColor = Vec4{0, 0, 15, 1}
 						LogView(ring, attrs)
 					})

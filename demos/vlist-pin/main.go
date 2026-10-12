@@ -10,6 +10,7 @@ package main
 //	go run ./demos/vlist-pin --png out.png
 
 import (
+	"flag"
 	"fmt"
 	"math/rand"
 	"os"
@@ -53,19 +54,21 @@ var (
 	items     []item
 	nextID    int64
 	mode      = pinNone
-	pinMargin  f32 // distance from bottom when pin-bottom was engaged
-	pinTopIdx  int // first visible index when pin-top was engaged
-	scrollY    f32
-	maxScroll  f32
-	firstVis   int
-	batchN     = batchSize
+	pinMargin f32 // distance from bottom when pin-bottom was engaged
+	pinTopIdx int // first visible index when pin-top was engaged
+	scrollY   f32
+	maxScroll f32
+	firstVis  int
+	batchN    = batchSize
 )
 
 func main() {
 	seedList(initialCount)
 
-	if len(os.Args) >= 3 && os.Args[1] == "--png" {
-		if err := RenderToPNG(os.Args[2], winW, winH, frameFn); err != nil {
+	png := flag.String("png", "", "write one settled frame to PATH and exit")
+	flag.Parse()
+	if *png != "" {
+		if err := RenderToPNG(*png, winW, winH, frameFn); err != nil {
 			fmt.Fprintln(os.Stderr, "render to png failed:", err)
 			os.Exit(1)
 		}
@@ -130,6 +133,7 @@ func replaceAll(n int) {
 }
 
 func frameFn() {
+	FPSCounter()
 	textAttrs := TextStyle(FontSize(fontSize), TextColor(0, 0, 18, 1))
 
 	Container(Attrs(Viewport, Background(220, 25, 96, 1)), func() {
@@ -154,11 +158,11 @@ func frameFn() {
 				}
 				Filler(1)
 				Label("Pin:", FontSize(13), TextColor(0, 0, 35, 1))
-				if SegmentedControl(&mode,
-					Cell("None", pinNone),
-					Cell("Bottom", pinBottom),
-					Cell("Top", pinTop),
-				) {
+				if SegmentedControl(&mode, func() {
+					SegmentedCell("None", pinNone)
+					SegmentedCell("Bottom", pinBottom)
+					SegmentedCell("Top", pinTop)
+				}) {
 					switch mode {
 					case pinBottom:
 						// Capture distance from end — do not jump to bottom.

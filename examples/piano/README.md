@@ -2,7 +2,7 @@
 
 A one-row playable keyboard and a small multi-voice synth.
 
-![piano](piano.webp)
+![Piano keyboard and voice controls](piano.webp)
 
 ## Playable keyboard and multi-voice synth
 
@@ -16,8 +16,8 @@ Esc releases stuck notes.
 
 Also usable offline without a window:
 
-- `--play [string|flute|sine]` — short demo through the default audio device
-- `--wav out.wav [voice]` — render the same demo to a file
+- `-play [string|flute|sine]` — short demo through the default audio device
+- `-wav out.wav [voice]` — render the same demo to a file
 
 ## Audio beside the window
 

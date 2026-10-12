@@ -112,7 +112,17 @@ func freeImage(id ImageId) {
 	res.imageLastUsed[id] = 0
 	res.freeImageIds = append(res.freeImageIds, id)
 	dropScaledForImage(id)
+	if imageFreed != nil {
+		imageFreed(id)
+	}
 }
+
+// imageFreed is called when a registry slot is released (GPU texture drop).
+var imageFreed func(ImageId)
+
+// SetImageFreedFunc registers a hook for ImageId reuse. The compositor uses it
+// to drop the GPU texture for that id.
+func SetImageFreedFunc(fn func(ImageId)) { imageFreed = fn }
 
 // maybeSweepImages frees registry entries not touched within
 // contentCachePruneAfterFrames. Called after the final RunFrameFn pass.

@@ -154,6 +154,7 @@ func handleQuickOpen() {
 
 func RootView() {
 	ProfileButton("text-viewer")
+	FPSCounter()
 
 	handleQuickOpen()
 

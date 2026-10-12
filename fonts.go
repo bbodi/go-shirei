@@ -11,12 +11,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-text/typesetting/font"
 	"github.com/go-text/typesetting/font/opentype"
 	"github.com/go-text/typesetting/font/opentype/tables"
 	"github.com/go-text/typesetting/fontscan"
+	"github.com/go-text/typesetting/harfbuzz"
 	"go.hasen.dev/generic"
 )
 
@@ -34,6 +36,36 @@ func InitFontSubsystem() {
 
 func init() {
 	InitFontSubsystem()
+}
+
+// systemFontScanDone is set when the background directory walk finishes
+// (including the empty-dir case). Tests that measure idle CPU wait on this
+// so the startup scan is not charged against the budget.
+var systemFontScanDone atomic.Bool
+
+// SystemFontScanDone reports whether the background system-font walk has
+// finished. Critical UI faces are already available before this is true.
+func SystemFontScanDone() bool {
+	return systemFontScanDone.Load()
+}
+
+// WaitForSystemFontScan is a test helper that tries to wait until all system font metadata
+// is loaded. It should not be called from regular application code, as it would introduce
+// startup delay. The critical face set is already available from InitFontSubsystem, and
+// live apps shape with that while the rest of the system fonts register in the background.
+//
+// Waits at most 1 seconds, because system font loading should not take that long anyway,
+// and if it does, then let the tests fail.
+func WaitForSystemFontScan() bool {
+	InitFontSubsystem()
+	if SystemFontScanDone() {
+		return true
+	}
+	deadline := time.Now().Add(time.Second)
+	for !SystemFontScanDone() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	return SystemFontScanDone()
 }
 
 type Color = color.NRGBA
@@ -130,6 +162,9 @@ func GetParsedFont(f FontId) *Font {
 	face := res.faces[f]
 	if face.parsed != nil || face.parseError != nil {
 		p := face.parsed
+		if p != nil {
+			touchFontLocked(f)
+		}
 		faceRegistryMu.RUnlock()
 		return p
 	}
@@ -165,6 +200,7 @@ func GetParsedFont(f FontId) *Font {
 	}
 	// Another goroutine may have published while we parsed.
 	if res.faces[f].parsed != nil {
+		touchFontLocked(f)
 		return res.faces[f].parsed
 	}
 	if perr != nil {
@@ -217,11 +253,12 @@ func applyParsedFaceLocked(fid FontId, ttf *Font) {
 	face.parsed = ttf
 	face.warmed = true
 	res.faces[fid] = face
+	touchFontLocked(fid)
 }
 
 // FontParsed reports whether this face's parsed tables are currently resident.
-// File-backed faces are dropped at the end of each frame (shape and glyph
-// caches keep drawing); a later GetParsedFont re-reads the file.
+// File-backed faces drop after parsedFontIdleFrames unused FrameNumber steps
+// (shape and glyph caches keep drawing); a later GetParsedFont re-reads the file.
 func FontParsed(id FontId) bool {
 	faceRegistryMu.RLock()
 	defer faceRegistryMu.RUnlock()
@@ -230,30 +267,71 @@ func FontParsed(id FontId) bool {
 
 // FontWarmed reports whether this face has been parsed at least once.
 // Fontviewer uses this so a card that already shaped does not fall back to
-// a skeleton after the frame-end unload.
+// a skeleton after an idle unload.
 func FontWarmed(id FontId) bool {
 	faceRegistryMu.RLock()
 	defer faceRegistryMu.RUnlock()
 	return id > 0 && int(id) < len(res.faces) && res.faces[id].warmed
 }
 
+// parsedFontIdleFrames is how many unused FrameNumber steps a file-backed
+// face stays parsed after last use. 0 keeps a face only if it was touched
+// this frame. Tests may lower it.
+var parsedFontIdleFrames int64 = 12
+
+func frameNumber() int64 {
+	if ui == nil {
+		return 0
+	}
+	return ui.FrameNumber
+}
+
+// touchFontLocked stamps lastUsed. Caller holds faceRegistryMu (R or W).
+func touchFontLocked(id FontId) {
+	if id > 0 && int(id) < len(res.faces) {
+		atomic.StoreInt64(&res.faces[id].lastUsed, frameNumber())
+	}
+}
+
+func touchFont(id FontId) {
+	if id == 0 {
+		return
+	}
+	faceRegistryMu.RLock()
+	touchFontLocked(id)
+	faceRegistryMu.RUnlock()
+}
+
 // unloadFileBackedParsedFonts drops parsed tables (and the HarfBuzz wrapper)
-// for faces that can be reloaded from disk. UseFontBytes faces stay. Called
-// after this frame's shape + glyph raster so the next cache-hit frame does
-// not keep Apple Color Emoji / CJK NewFont heaps live. Returns how many
-// faces were dropped.
+// for file-backed faces that have not been used for more than
+// parsedFontIdleFrames FrameNumber steps. UseFontBytes faces stay. Called
+// after this frame's shape + glyph raster. Returns how many faces were dropped.
 func unloadFileBackedParsedFonts() int {
+	var dropped []FontId
 	faceRegistryMu.Lock()
-	defer faceRegistryMu.Unlock()
-	var n int
+	fn := frameNumber()
+	idle := parsedFontIdleFrames
 	for i := 1; i < len(res.faces); i++ {
 		f := &res.faces[i]
 		if f.parsed == nil || f.Filepath == "" {
 			continue
 		}
+		if fn-atomic.LoadInt64(&f.lastUsed) <= idle {
+			continue
+		}
 		f.parsed = nil
 		delete(res.hbfonts, f.FontId)
-		n++
+		dropped = append(dropped, f.FontId)
+	}
+	n := len(dropped)
+	if n > 0 {
+		// The shared buffer's shape-plan cache is keyed by face; dropping
+		// fonts would leave stale plans pinned. A fresh buffer starts empty.
+		sharedShapeBuffer = harfbuzz.NewBuffer()
+	}
+	faceRegistryMu.Unlock()
+	for _, id := range dropped {
+		forgetGlyphOutlinesForFont(id)
 	}
 	return n
 }
@@ -369,8 +447,8 @@ func UseFontBytes(data []byte) error {
 		changed = true
 	}
 	if changed {
-		// these bytes change what the chain covers, so shape-cache keys that
-		// depended on the old answer must miss (as after the system scan)
+		// these bytes change what the chain covers; the frame thread drops
+		// shape LRUs when it next observes the epoch
 		res.fontLookupEpoch++
 	}
 	return nil
@@ -595,6 +673,22 @@ func GlyphOutline(fontId FontId, glyphId GlyphId) font.GlyphOutline {
 	return outline
 }
 
+func forgetGlyphOutline(fontId FontId, glyphId GlyphId) {
+	res.glyphOutlineLock.Lock()
+	delete(res.glyphOutlineMemo, glyphOutlineKey{fontId, glyphId})
+	res.glyphOutlineLock.Unlock()
+}
+
+func forgetGlyphOutlinesForFont(fontId FontId) {
+	res.glyphOutlineLock.Lock()
+	for k := range res.glyphOutlineMemo {
+		if k.FontId == fontId {
+			delete(res.glyphOutlineMemo, k)
+		}
+	}
+	res.glyphOutlineLock.Unlock()
+}
+
 // FontFace holds some generic traits/info about the font face
 type FontFace struct {
 	FontId FontId
@@ -618,6 +712,11 @@ type FontFace struct {
 
 	// should not be read directly; call GetParsedFont instead
 	parsed *Font
+
+	// lastUsed is FrameNumber of the last GetParsedFont / shape / publish.
+	// File-backed parsed tables drop when FrameNumber-lastUsed exceeds
+	// parsedFontIdleFrames. Written with atomic while the registry lock is held.
+	lastUsed int64
 
 	// warmed is set on the first successful parse and never cleared.
 	// FontWarmed uses this; FontParsed is whether `parsed` is resident now.
@@ -765,7 +864,14 @@ func UseFontFiles(fpaths ...string) {
 	for _, fpath := range fpaths {
 		pending = append(pending, describeFontFile(fpath)...)
 	}
-	publishDescribedFaces(pending)
+	if publishDescribedFaces(pending) > 0 {
+		// Bump epoch so the frame thread drops shape LRUs. The background
+		// scan publishes via publishDescribedFaces directly and bumps once
+		// at the end, not per batch.
+		faceRegistryMu.Lock()
+		res.fontLookupEpoch++
+		faceRegistryMu.Unlock()
+	}
 }
 
 // UseFontFile registers one font file. Equivalent to UseFontFiles(fpath).
@@ -828,6 +934,7 @@ func startFontSubsystem() {
 }
 
 func backgroundSystemFontScan() {
+	defer systemFontScanDone.Store(true)
 	start := time.Now()
 	// Discard fontconfig's warnings about unresolved/missing includes — harmless
 	// noise on minimal systems that otherwise spams every app's stderr at startup.
@@ -874,8 +981,9 @@ func backgroundSystemFontScan() {
 	flush()
 
 	if added > 0 {
-		// One epoch bump for the whole scan — shape cache keys that depended on
-		// fallback availability miss once; no per-file LRU wipe.
+		// One epoch bump for the whole scan. The frame thread drops shape
+		// LRUs on the next ShapeText; no per-file wipe, no scan-thread LRU
+		// mutation.
 		faceRegistryMu.Lock()
 		res.fontLookupEpoch++
 		faceRegistryMu.Unlock()

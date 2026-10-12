@@ -7,8 +7,9 @@ package main
 //	go run ./demos/custom-scrollbars
 
 import (
-	"os"
+	"flag"
 	"fmt"
+	"os"
 
 	"go.hasen.dev/shirei/app"
 
@@ -17,8 +18,10 @@ import (
 )
 
 func main() {
-	if len(os.Args) >= 3 && os.Args[1] == "--png" {
-		if err := RenderToPNG(os.Args[2], 960, 640, root); err != nil {
+	png := flag.String("png", "", "write one settled frame to PATH and exit")
+	flag.Parse()
+	if *png != "" {
+		if err := RenderToPNG(*png, 960, 640, root); err != nil {
 			fmt.Println("render to png failed:", err)
 			os.Exit(1)
 		}

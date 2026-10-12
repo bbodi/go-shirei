@@ -1,6 +1,8 @@
 package shirei
 
 import (
+	"time"
+
 	"github.com/cespare/xxhash/v2"
 	g "go.hasen.dev/generic"
 )
@@ -68,9 +70,51 @@ func CachedMeasure[K comparable](key K, maxSize Vec2, fn FrameFn) Vec2 {
 	return size
 }
 
+// measureUIPool holds idle measure UIs for reuse across Measure calls.
+// Measure calls are serialized by the frame lock but can NEST (a Measure
+// inside a live frame, or a measured subtree measuring its own items), so
+// this is a LIFO stack rather than a single slot. Only accessed under the
+// frame lock.
+//
+// What reuse actually carries over is the expensive part of a UI: the
+// container pool slabs and the command map. Everything else — Host, the
+// identity root (Measure's contract: ephemeral component state starts at
+// defaults), focus state — starts fresh, by building a fresh *UI and
+// transplanting only those buffers. Any UI field added later is therefore
+// zero here by construction, exactly like a brand-new UI.
+//
+// A fresh measure UI is deliberately lean compared to NewUI: the measure
+// path never emits surfaces (no render stage), so NewUI's preallocated
+// surface/glyph-run buffers (~3 MB) would be dead weight per call.
+var measureUIPool []*UI
+
+func acquireMeasureUI() *UI {
+	m := &UI{
+		Host:            defaultHost(),
+		identRoot:       newNode(nil, 0, nil),
+		frameStart:      time.Now(),
+		pendingCommands: make(map[_CommandKey]pendingCommand),
+	}
+	if n := len(measureUIPool); n > 0 {
+		old := measureUIPool[n-1]
+		measureUIPool = measureUIPool[:n-1]
+		m.containerSlabs = old.containerSlabs
+		m.slabIndex = old.slabIndex
+		m.pendingCommands = old.pendingCommands
+		clear(m.pendingCommands)
+		m.FrameNumber = old.FrameNumber
+	}
+	return m
+}
+
+func releaseMeasureUI(m *UI) {
+	measureUIPool = append(measureUIPool, m)
+}
+
 func measureLocked(maxSize Vec2, fn FrameFn) Vec2 {
 	prev := ui
-	m := NewUI()
+	m := acquireMeasureUI()
+	defer releaseMeasureUI(m)
 	scale := prev.Host.WindowScale
 	if scale <= 0 {
 		scale = 1
@@ -98,13 +142,17 @@ func measureLocked(maxSize Vec2, fn FrameFn) Vec2 {
 
 		m.frameFocusTrap = nil
 		m.buildingFocusTrap = nil
+		m.trapMountedThisFrame = false
 		m.Host.WantsKeyboard = false
 		// Size-only: no animation clock advancement.
 		m.timeDelta = 0
 
 		m.Host.NextFrame.Store(false)
+		m.containerBuilt = 0
+		m.treeCount = 0
 
-		root := new(_Container)
+		swapContainerSlab()
+		root := newContainer()
 		m.current = root
 		root.node = m.identRoot
 		m.currentIdent = m.identRoot
@@ -118,9 +166,9 @@ func measureLocked(maxSize Vec2, fn FrameFn) Vec2 {
 		fn()
 
 		resolveSizeFromInside(root)
+		// Root preamble, same as RunFrameFn's.
+		commitLayoutSizeAndDetectStale(root)
 		resolveSizesFromOutside(root)
-		commitLayoutSizesAndDetectStale(root)
-		resolveOrigins(root)
 		// Clip against the max budget (or content size when unconstrained).
 		clip := maxSize
 		if clip[0] <= 0 {
@@ -129,7 +177,7 @@ func measureLocked(maxSize Vec2, fn FrameFn) Vec2 {
 		if clip[1] <= 0 {
 			clip[1] = root.resolvedSize[1]
 		}
-		applyClipping(root, Rect{Size: clip})
+		resolveLayout(root, Rect{Size: clip})
 
 		size = root.resolvedSize
 
@@ -143,5 +191,6 @@ func measureLocked(maxSize Vec2, fn FrameFn) Vec2 {
 	// Intentionally no maybeSweepImages / maybeSweepContentCaches: those are
 	// process-global and must not run against a disposable measure FrameNumber.
 	// Identity on m is discarded with m; no need to sweep it.
+	prev.containerBuilt += m.containerBuilt
 	return size
 }

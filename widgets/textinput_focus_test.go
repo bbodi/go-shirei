@@ -49,3 +49,33 @@ func TestTextInputFocusedRender(t *testing.T) {
 		t.Fatal("unfocused TextInput must not leave GetHost().WantsKeyboard set")
 	}
 }
+
+func TestTabLeavesTextInputWithoutWidgetCall(t *testing.T) {
+	initFontsOnce.Do(shirei.InitFontSubsystem)
+	shirei.ResetInputSession()
+	GetHost().WindowSize = Vec2{400, 200}
+
+	var buf string
+	var other ContainerId
+	attrs := DefaultTextInputAttrs()
+	attrs.FixedWidth = true
+	view := func() {
+		Container(Attrs(Pad(20), Gap(8)), func() {
+			TextInputExt(&buf, attrs)
+			other = Container(Attrs(Focusable, FixSize(40, 20)), func() {})
+		})
+	}
+
+	RunFrameFn(view) // AutoFocus requests the field
+	RunFrameFn(view) // field holds focus
+	if IdHasFocus(other) {
+		t.Fatal("setup: the trailing control must not start focused")
+	}
+
+	GetFrameInput().Key = KeyTab
+	RunFrameFn(view)
+	RunFrameFn(view)
+	if !IdHasFocus(other) {
+		t.Fatal("Tab should leave the text field for the next Focusable")
+	}
+}

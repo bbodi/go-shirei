@@ -12,7 +12,7 @@ func fillS(v float32) Surface { return Surface{Color1: Vec4{v, v, v, 1}} }
 
 // runFrame drives one analyze pass and returns the per-frame stats (fetch resets).
 func runFrame(rc *regionCache, ss []Surface) RegionStats {
-	rc.collectRegions(ss)
+	rc.collectRegions(ss, nil)
 	return rc.fetchStats()
 }
 

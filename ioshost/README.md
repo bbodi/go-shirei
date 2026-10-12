@@ -1,6 +1,6 @@
 # ioshost
 
-The UIKit host template used by `ios-run.sh` lives at:
+The UIKit host template used by `shirei_mobilerun` lives at:
 
 ```
 shirei/cmd/shirei_mobilerun/embed/ioshost/

@@ -1,7 +1,6 @@
 package shirei
 
 import (
-	"slices"
 	"testing"
 
 	g "go.hasen.dev/generic"
@@ -360,7 +359,7 @@ func TestFontShapeEqual(t *testing.T) {
 	if fontShapeEqual(a, b) {
 		t.Fatal("weight is shaping tier")
 	}
-	if !slices.Equal(a.FontFamilies, DefaultTextStyle().FontFamilies) {
+	if !familyListEq(a.fontFamilies, DefaultTextStyle().fontFamilies) {
 		t.Fatal("sanity")
 	}
 }
@@ -377,7 +376,8 @@ func TestTextStyleCascade(t *testing.T) {
 	RunFrameFn(func() {
 		ContainerWithKey(scope, AttrSet{}, func() {
 			// root ui.current text style is non-zero default
-			if g.IsZeroBytes(GetAttrs().TextStyle) {
+			rootStyle := GetAttrs().TextStyle
+			if g.IsZeroBytes(&rootStyle) {
 				t.Fatal("root should have non-zero text style")
 			}
 			Container(Attrs(AmendTextStyle(FontSize(18), TextColor(10, 20, 30, 1))), func() {
@@ -405,5 +405,3 @@ func TestTextStyleCascade(t *testing.T) {
 		t.Fatalf("SetTextStyle should override style without inheriting: %+v", afterReset)
 	}
 }
-
-

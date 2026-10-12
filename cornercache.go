@@ -80,6 +80,27 @@ func newCornerMask(pix []byte, dim int) *cornerMask {
 
 // fillCornerMask returns the cached quarter-disk corner mask for a fill corner of
 // the given device-px radius (canonical top-left, dim == rad). nil for rad <= 0.
+// CornerFillCoverage is the canonical top-left quarter-disk coverage for a fill
+// corner of the given device-px radius. pix is one byte per pixel, stride == dim.
+// The other three corners are this stamp flipped. nil if rad <= 0.
+func CornerFillCoverage(rad int) (pix []byte, dim int) {
+	m := fillCornerMask(rad)
+	if m == nil {
+		return nil, 0
+	}
+	return m.pix, m.dim
+}
+
+// CornerBorderCoverage is the canonical top-left inside-stroke ring for a border
+// corner (outer radius rad, thickness stroke). Same layout as CornerFillCoverage.
+func CornerBorderCoverage(rad, stroke int) (pix []byte, dim int) {
+	m := borderCornerMask(rad, stroke)
+	if m == nil {
+		return nil, 0
+	}
+	return m.pix, m.dim
+}
+
 func fillCornerMask(rad int) *cornerMask {
 	if rad <= 0 || rad > 65535 {
 		return nil

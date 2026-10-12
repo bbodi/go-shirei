@@ -40,10 +40,10 @@ func RootView() {
 		Label("Mobile: OS locks interface orientation.\nDesktop: preference is ignored.",
 			FontSize(11), TextColor(0, 0, 50, 1))
 
-		SegmentedControl(&h.PreferredOrientation,
-			Cell("Any", OrientationAny),
-			Cell("Portrait", OrientationPortrait),
-			Cell("Landscape", OrientationLandscape),
-		)
+		SegmentedControl(&h.PreferredOrientation, func() {
+			SegmentedCell("Any", OrientationAny)
+			SegmentedCell("Portrait", OrientationPortrait)
+			SegmentedCell("Landscape", OrientationLandscape)
+		})
 	})
 }

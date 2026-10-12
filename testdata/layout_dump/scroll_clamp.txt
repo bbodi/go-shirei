@@ -1,0 +1,4 @@
+d=0 orig=0,0 size=200,200 screen=0,0,200,200 content=80,80 scroll=0,0 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0
+d=1 orig=0,0 size=80,80 screen=0,0,80,80 content=80,80 scroll=0,0 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0
+d=2 orig=0,0 size=80,80 screen=0,0,80,80 content=200,200 scroll=0,120 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0
+d=3 orig=0,-120 size=200,200 screen=0,0,80,80 content=0,0 scroll=0,0 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0

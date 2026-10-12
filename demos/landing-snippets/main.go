@@ -2,16 +2,17 @@
 // landing page.
 //
 //	go run ./demos/landing-snippets
-//	go run ./demos/landing-snippets --png form out.png
-//	go run ./demos/landing-snippets --png tags out.png
-//	go run ./demos/landing-snippets --png conditional out.png
+//	go run ./demos/landing-snippets -png out.png -scene form
+//	go run ./demos/landing-snippets -png out.png -scene tags
+//	go run ./demos/landing-snippets -png out.png -scene conditional
 //
-//go:generate go run . --png form ../../../static-sites/judi.systems/shirei/snippets/form.png
-//go:generate go run . --png tags ../../../static-sites/judi.systems/shirei/snippets/tags.png
-//go:generate go run . --png conditional ../../../static-sites/judi.systems/shirei/snippets/conditional.png
+//go:generate go run . -png ../../../static-sites/judi.systems/shirei/snippets/form.png -scene form
+//go:generate go run . -png ../../../static-sites/judi.systems/shirei/snippets/tags.png -scene tags
+//go:generate go run . -png ../../../static-sites/judi.systems/shirei/snippets/conditional.png -scene conditional
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,8 +60,19 @@ var sampleContact = Contact{
 }
 
 func main() {
-	if len(os.Args) >= 4 && os.Args[1] == "--png" {
-		if err := renderScene(os.Args[2], os.Args[3]); err != nil {
+	png := flag.String("png", "", "write the named scene to PATH and exit")
+	scene := flag.String("scene", "", "form, tags, or conditional")
+	flag.Parse()
+	if *png != "" {
+		name := *scene
+		if name == "" {
+			name = flag.Arg(0)
+		}
+		if name == "" {
+			fmt.Fprintln(os.Stderr, "-png requires -scene NAME")
+			os.Exit(2)
+		}
+		if err := renderScene(name, *png); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

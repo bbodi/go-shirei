@@ -50,24 +50,26 @@ func toggleCPUProfile(prefix string) {
 	profilingActive = true
 }
 
-const profileButtonWidth = 170
+type profilePanelState struct {
+	position Vec2
+}
 
-// ProfileButton is a floating record toggle for a runtime/pprof CPU profile,
-// writing to a timestamped <prefix->cpu-<ts>.pprof file in the current
-// directory (callers should pass their own lowercase app name as prefix, so
-// profiles from different example programs stay distinguishable). Call it as
-// a direct statement inside the container whose top-right corner it should
-// float in (its position is computed from that container's size).
+var profilePanel = profilePanelState{position: Vec2{10, 10}}
+
+// ProfileButton is a floating, draggable record toggle for a runtime/pprof
+// CPU profile, writing to a timestamped <prefix->cpu-<ts>.pprof file in the
+// current directory (callers should pass their own lowercase app name as
+// prefix, so profiles from different example programs stay distinguishable).
+// Call it as a direct statement in the UI; it floats like DebugPanel.
 //
-// The button is a no-op unless Debug is true (DEBUG=1 in the environment, or
-// set Debug explicitly). Safe to leave at every call site permanently.
+// No-op unless SHIREI_PPROF=1. Safe to leave at every call site permanently.
 func ProfileButton(prefix ...string) {
-	if !DEBUG_ENV {
-		return
-	}
+	ProfileButtonStyled(CurrentColorScheme, prefix...)
+}
 
-	size := GetResolvedSize()
-	if size[0] <= 0 {
+// ProfileButtonStyled supplies explicit colors for the panel and its button.
+func ProfileButtonStyled(scheme ColorScheme, prefix ...string) {
+	if !PROFILE_ENV {
 		return
 	}
 
@@ -76,14 +78,29 @@ func ProfileButton(prefix ...string) {
 		name = prefix[0]
 	}
 
-	const margin = 8
 	label := "● start profiler"
 	if profilingActive {
 		label = "■ stop profiler"
 	}
 
-	Container(Attrs(Float(size[0]-profileButtonWidth-margin, margin), InFront, FixWidth(profileButtonWidth), CrossAlign(AlignEnd)), func() {
-		if CtrlButton(NoIcon, label, true) {
+	ContainerWithKey(&profilePanel, Attrs(FloatVec(profilePanel.position), InFront, BackgroundVec(scheme.Overlay.Background), Corners(4), Pad(4), Gap(4), NoAnimate), func() {
+		// Capture on the panel chrome so the inner button keeps the click.
+		if IsHoveredDirectly() || IsActive() {
+			PressAction()
+		}
+		if IsActive() {
+			profilePanel.position = Vec2Add(profilePanel.position, GetFrameInput().Motion)
+		}
+		var sz = GetResolvedSize()
+		var br = Vec2Add(profilePanel.position, sz)
+		if br[0] > GetHost().WindowSize[0] {
+			profilePanel.position[0] = GetHost().WindowSize[0] - sz[0]
+		}
+		if br[1] > GetHost().WindowSize[1] {
+			profilePanel.position[1] = GetHost().WindowSize[1] - sz[1]
+		}
+		Label("CPU profiler", FontSize(10), TextColorVec(scheme.Overlay.Text), Fonts(Monospace...))
+		if ButtonStyled(label, ButtonAttrs{}, DefaultCtrlButtonLook(), scheme.Buttons.Default, scheme.FocusRing) {
 			toggleCPUProfile(name)
 		}
 	})

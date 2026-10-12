@@ -155,6 +155,7 @@ type f32 = float32
 
 func RootView() {
 	ProfileButton("image-list")
+	FPSCounter()
 
 	handleQuickOpen()
 

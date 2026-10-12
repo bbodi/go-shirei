@@ -31,6 +31,10 @@ var (
 	pendingMinW       float32
 	pendingMinH       float32
 
+	hasPendingSize bool
+	pendingSizeW   float32
+	pendingSizeH   float32
+
 	// Placement pending state
 	pendingPlacement placementMode
 	pendingX         int
@@ -71,6 +75,35 @@ func SetMinSize(minWidth, minHeight float32) {
 	mu.Unlock()
 
 	applyMinSize(ctx, minWidth, minHeight)
+}
+
+// SetSize sets the window content size (logical points). Best-effort across
+// desktop backends (ignored on Wayland and mobile). Values below the current
+// minimum (SetMinSize) are clamped by the platform.
+//
+// Safe to call before app.Run or dynamically during runtime.
+func SetSize(width, height float32) {
+	if width < 0 {
+		width = 0
+	}
+	if height < 0 {
+		height = 0
+	}
+
+	mu.Lock()
+	hasPendingSize = true
+	pendingSizeW = width
+	pendingSizeH = height
+
+	ctx := shirei.GetHost().EscapeHatchBackendContext
+	if ctx == nil {
+		ensureWaiterLocked()
+		mu.Unlock()
+		return
+	}
+	mu.Unlock()
+
+	setPlatformSize(ctx, width, height)
 }
 
 // Center requests that the window be centered on the primary display.
@@ -131,6 +164,9 @@ func waitForWindow() {
 			waiterActive = false
 			doMinSize := hasPendingMinSize
 			minW, minH := pendingMinW, pendingMinH
+			doSize := hasPendingSize
+			szW, szH := pendingSizeW, pendingSizeH
+			hasPendingSize = false
 			placement := pendingPlacement
 			px, py := pendingX, pendingY
 			pendingPlacement = placeNone
@@ -138,6 +174,9 @@ func waitForWindow() {
 
 			if doMinSize {
 				applyMinSize(ctx, minW, minH)
+			}
+			if doSize {
+				setPlatformSize(ctx, szW, szH)
 			}
 			switch placement {
 			case placeCenter:
@@ -170,6 +209,7 @@ func applyMinSize(ctx shirei.BackendContext, minWidth, minHeight float32) {
 
 var (
 	setPlatformMinSize  = func(ctx shirei.BackendContext, minW, minH float32) {}
+	setPlatformSize     = func(ctx shirei.BackendContext, w, h float32) {}
 	setPlatformCenter   = func(ctx shirei.BackendContext) {}
 	setPlatformPosition = func(ctx shirei.BackendContext, x, y int) {}
 )

@@ -1,18 +1,23 @@
 // Package app is shirei's GOOS-selected native backend. An application imports
 // this one package, calls SetupWindow then Run, and the compiler links the
-// right platform shell:
+// right platform shell. Quit is generic.ExitWithCleanup so AddExitCleanup
+// handlers run.
 //
-//	darwin  -> cocoabackend  (AppKit + IOSurface/CALayer present)
-//	ios     -> iosbackend    (UIKit + CALayer present; Simulator spike)
-//	windows -> win32backend  (Win32 + CreateDIBSection/StretchDIBits present)
-//	linux   -> linuxbackend  (Wayland wl_shm / X11 MIT-SHM; selected at runtime)
-//	js      -> jsbackend     (canvas + requestAnimationFrame present; wasm)
+//	darwin  -> cocoabackend  (AppKit; Metal compositor into IOSurface/CALayer)
+//	ios     -> iosbackend    (UIKit; Metal into CAMetalLayer; Simulator spike)
+//	windows -> win32backend  (Win32; D3D11 compositor, DIB software fallback)
+//	linux   -> linuxbackend  (Wayland GLES/dmabuf or X11 software; runtime pick)
+//	android -> androidbackend (GLES compositor, software fallback)
+//	js      -> jsbackend     (WebGL2 compositor or 2d canvas; wasm)
 //
-// All shells share shirei's core software renderer; they differ only in
-// window, input, and present plumbing. Each underlying backend package still
-// works standalone — this package is a thin re-export so app code targets a
-// single import regardless of OS. On iOS, use ./ios-run.sh to c-archive +
-// launch a main package in the Simulator (UIApplicationMain owns the process).
+// Windowed paint uses the GPU compositor by default on macOS (Metal), iOS
+// (Metal), Wayland (GLES), Android (GLES), Windows (D3D11), and web
+// (WebGL2). X11 stays on SoftRenderer. SHIREI_GPU=0 or init failure falls
+// back to SoftRenderer on the other shells. Snapshots and headless tests
+// always use SoftRenderer. Shells still differ in window, input, and present
+// plumbing. Each underlying backend package still works standalone — this
+// package is a thin re-export so app code targets a single import regardless
+// of OS.
 //
 // The OS selection is purely compile-time, via build constraints on the
 // app_<goos>.go files. Within Linux, the Wayland-vs-X11 choice is made at
@@ -28,7 +33,7 @@
 // other apps; no background audio) and reports interruptions via
 // shirei.GetInputState().AudioInterrupted. On the web, the AudioContext often
 // stays suspended until a user gesture; the js backend resumes on first
-// pointer/key input. Each OS's audio backend uses the same linking mechanism
-// its window backend already relies on (cgo on Apple platforms, no cgo on
-// linux/windows/js).
+// pointer/key input. Audio links without cgo on macOS (purego AudioQueue),
+// linux (purego ALSA), windows (winmm), and js (Web Audio). iOS audio is
+// still cgo. AppKit and Metal on macOS are purego.
 package app

@@ -1,7 +1,7 @@
 // Package waylandbackend is shirei's native Wayland shell: it owns the window and
-// input and presents the shared core software renderer's BGRA buffer via a
-// wl_shm shared-memory pool (no per-frame pixels over the socket), mirroring what
-// cocoabackend/win32backend/x11backend do on their platforms.
+// input and presents a BGRA buffer the compositor can scan out. GLES
+// (shirei/gpurender) writes a dmabuf and is the default compositor unless
+// SHIREI_GPU=0 or init fails; wl_shm + SoftRenderer is the fallback.
 //
 // The Wayland protocol is spoken in pure Go via github.com/neurlang/wayland
 // (the maintained successor to rajveermalviya/go-wayland), so the backend

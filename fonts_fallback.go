@@ -5,6 +5,7 @@ import (
 	"sync"
 	"unicode"
 
+	"github.com/dboslee/lru"
 	"github.com/go-text/typesetting/language"
 )
 
@@ -17,7 +18,7 @@ func FallbackFontFor(ch rune, aspect FontAspect) (FontId, GlyphId) {
 	key := fallbackMemoKey{ch, aspect}
 
 	fallbackMemoMu.Lock()
-	if hit, ok := fallbackMemo[key]; ok && hit.epoch == epoch {
+	if hit, ok := fallbackMemo.Get(key); ok && hit.epoch == epoch {
 		fallbackMemoMu.Unlock()
 		return hit.fid, hit.gid
 	}
@@ -31,7 +32,7 @@ func FallbackFontFor(ch rune, aspect FontAspect) (FontId, GlyphId) {
 	}
 
 	fallbackMemoMu.Lock()
-	fallbackMemo[key] = fallbackMemoHit{epoch: epoch, fid: fid, gid: gid}
+	fallbackMemo.Set(key, fallbackMemoHit{epoch: epoch, fid: fid, gid: gid})
 	fallbackMemoMu.Unlock()
 	return fid, gid
 }
@@ -49,7 +50,7 @@ type fallbackMemoHit struct {
 
 var (
 	fallbackMemoMu sync.Mutex
-	fallbackMemo   = map[fallbackMemoKey]fallbackMemoHit{}
+	fallbackMemo   = lru.New[fallbackMemoKey, fallbackMemoHit](lru.WithCapacity(4096))
 )
 
 func fontLookupEpoch() uint64 {
@@ -62,8 +63,8 @@ func fontLookupEpoch() uint64 {
 // fallbackScan walks the script-bucket chain for one rune, parsing a candidate
 // in full only when its cmap covers ch.
 func fallbackScan(ch rune, aspect FontAspect) (FontId, GlyphId) {
-	for _, family := range fallbackFamiliesFor(ch) {
-		fid := LookupFace(FaceLookupKey{family, aspect})
+	ids, _ := fallbackFamilyList(ch).resolve(aspect)
+	for _, fid := range ids {
 		if fid == 0 {
 			continue
 		}
@@ -146,6 +147,8 @@ func isEmojiRune(ch rune) bool {
 // must not open Noto CJK just to discover a miss.
 var lastResortFamilies = []string{
 	"Noto Sans",
+	"Roboto",
+	"Droid Sans",
 	"Arial",
 	"DejaVu Sans",
 	"DejaVu Sans Mono",
@@ -155,6 +158,8 @@ var lastResortFamilies = []string{
 var bucketFamilies = [...][]string{
 	bucketLatin: {
 		"Noto Sans",
+		"Roboto",
+		"Droid Sans",
 		"Noto Sans Mono",
 		"Arial",
 		"Times New Roman",
@@ -165,11 +170,15 @@ var bucketFamilies = [...][]string{
 	},
 	bucketGreek: {
 		"Noto Sans",
+		"Roboto",
+		"Droid Sans",
 		"Arial",
 		"Times New Roman",
 	},
 	bucketCyrillic: {
 		"Noto Sans",
+		"Roboto",
+		"Droid Sans",
 		"Arial",
 		"Times New Roman",
 	},
@@ -262,25 +271,34 @@ var bucketFamilies = [...][]string{
 	},
 }
 
-func fallbackFamiliesFor(ch rune) []string {
-	pref := bucketFamilies[scriptBucketFor(ch)]
-	out := make([]string, 0, len(pref)+len(lastResortFamilies))
-	seen := make(map[string]bool, len(pref)+len(lastResortFamilies))
-	for _, name := range pref {
-		k := strings.ToLower(name)
-		if seen[k] {
-			continue
-		}
-		seen[k] = true
-		out = append(out, name)
+var fallbackLists [bucketOther + 1]*internedFamilies
+
+func fallbackFamilyList(ch rune) *internedFamilies {
+	b := scriptBucketFor(ch)
+	if f := fallbackLists[b]; f != nil {
+		return f
 	}
-	for _, name := range lastResortFamilies {
-		k := strings.ToLower(name)
-		if seen[k] {
-			continue
+	f := internFamilyList(dedupeFallbackNames(bucketFamilies[b], lastResortFamilies))
+	fallbackLists[b] = f
+	return f
+}
+
+func fallbackFamiliesFor(ch rune) []string {
+	return fallbackFamilyList(ch).names
+}
+
+func dedupeFallbackNames(pref, extra []string) []string {
+	out := make([]string, 0, len(pref)+len(extra))
+	seen := make(map[string]bool, len(pref)+len(extra))
+	for _, group := range [][]string{pref, extra} {
+		for _, name := range group {
+			k := strings.ToLower(name)
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			out = append(out, name)
 		}
-		seen[k] = true
-		out = append(out, name)
 	}
 	return out
 }

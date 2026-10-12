@@ -21,10 +21,21 @@ var useWayland = os.Getenv("WAYLAND_DISPLAY") != ""
 // Call it before Run. On Wayland with CSD the surface is taller by the
 // titlebar so the app body keeps that size (X11 uses server decorations).
 func SetupWindow(title string, width, height int) {
+	shirei.GetHost().WindowSize = shirei.Vec2{float32(width), float32(height)}
 	if useWayland {
 		waylandbackend.SetupWindow(title, width, height)
 	} else {
 		x11backend.SetupWindow(title, width, height)
+	}
+}
+
+// SetupQuiet maps the window without asking the compositor/WM to take focus.
+// Call before Run.
+func SetupQuiet() {
+	if useWayland {
+		waylandbackend.SetupQuiet()
+	} else {
+		x11backend.SetupQuiet()
 	}
 }
 
@@ -61,8 +72,8 @@ func SetupIconBytes(data []byte) {
 }
 
 // Run opens the window and runs the native event loop, invoking frameFn once per
-// frame. It must be called from the program's main goroutine and does not return
-// until the app exits.
+// frame. It must be called from the program's main goroutine and does not return:
+// quit paths call generic.ExitWithCleanup so AddExitCleanup handlers run.
 func Run(frameFn shirei.FrameFn) {
 	if useWayland {
 		waylandbackend.Run(frameFn)

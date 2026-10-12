@@ -7,8 +7,8 @@ require (
 	github.com/go-git/go-billy/v6 v6.0.0-alpha.2
 	github.com/go-git/go-git/v6 v6.0.0-alpha.5
 	github.com/sergi/go-diff v1.4.0
-	go.hasen.dev/shirei v0.6.7
-	golang.org/x/image v0.29.0
+	go.hasen.dev/shirei v0.8.0
+	golang.org/x/image v0.43.0
 )
 
 require (
@@ -19,7 +19,7 @@ require (
 	github.com/cli/browser v1.3.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/dboslee/lru v0.0.1 // indirect
-	github.com/ebitengine/purego v0.10.1 // indirect
+	github.com/ebitengine/purego v0.11.0 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/go-git/gcfg/v2 v2.0.2 // indirect
 	github.com/go-text/typesetting v0.3.4 // indirect
@@ -28,10 +28,13 @@ require (
 	github.com/kevinburke/ssh_config v1.6.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/pjbgf/sha1cd v0.6.0 // indirect
-	go.hasen.dev/generic v0.1.7 // indirect
+	go.hasen.dev/generic v0.1.8 // indirect
+	go.hasen.dev/udplib v0.1.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 )
+
+require go.hasen.dev/shirei/ext/darkmode v0.8.0

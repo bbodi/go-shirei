@@ -369,6 +369,7 @@ Sample size (`AvgSampleTop` / `AvgSampleBottom`) multiplies height probes — se
 The list is policy-free for pin-to-bottom:
 
 - `VirtualListView_ScrollToIndex` / `ScrollToIndexAt`
+- `VirtualListView_ScrollTo(listKey, offset)` — pixel Y; use with `OutScrollOffset` for fixed-height restore (Table)
 - `VirtualListView_ScrollToEnd(listKey, margin)`
 - `VirtualListScrollIntoView(listKey, itemKey)`
 

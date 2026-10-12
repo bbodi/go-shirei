@@ -87,9 +87,9 @@ func assertCacheMatchesInline(t *testing.T, frames [][]Surface, devW, devH int, 
 	var inline, cached SoftRenderer
 	inline.noRegionCache = true // reference path: original inline rasterizer
 	for f, ss := range frames {
-		a := inline.Render(ss, devW, devH, scale)
+		a := inline.Render(ss, nil, devW, devH, scale)
 		aPix := append([]byte(nil), a.Pix...)
-		b := cached.Render(ss, devW, devH, scale)
+		b := cached.Render(ss, nil, devW, devH, scale)
 		if n, first, maxAbs := diffPix(aPix, b.Pix); maxAbs > tol {
 			t.Fatalf("frame %d: cached differs from inline beyond tol=%d in %d/%d bytes (maxAbs=%d), first at %d (px %d, x=%d y=%d)",
 				f, tol, n, len(aPix), maxAbs, first, first/4, (first/4)%devW, (first/4)/devW)
@@ -169,7 +169,7 @@ func TestRegionHashTracksImageGeneration(t *testing.T) {
 	}
 
 	var rc regionCache
-	rc.collectRegions(scene)
+	rc.collectRegions(scene, nil)
 	h1 := rc.byStart[0].hash
 
 	// Replace the pixels behind the SAME id: surface bytes are unchanged, only the
@@ -178,7 +178,7 @@ func TestRegionHashTracksImageGeneration(t *testing.T) {
 	if id2 != id {
 		t.Fatalf("UseImage should reuse the id for the same key: got %d want %d", id2, id)
 	}
-	rc.collectRegions(scene)
+	rc.collectRegions(scene, nil)
 	h2 := rc.byStart[0].hash
 
 	if h1 == h2 {
@@ -201,9 +201,9 @@ func TestWholeFrameHashTracksImageGeneration(t *testing.T) {
 	id := UseImage("test-wholeframe-gen", fill(0x11))
 	ss := []Surface{{ImageId: id, Rect: rrect(0, 0, 10, 10)}}
 
-	h1 := computeSurfacesHash(ss)
+	h1 := computeSurfacesHash(ss, nil)
 	UseImage("test-wholeframe-gen", fill(0x22)) // same id, new pixels -> generation bumps
-	h2 := computeSurfacesHash(ss)
+	h2 := computeSurfacesHash(ss, nil)
 
 	if h1 == h2 {
 		t.Fatalf("whole-frame hash unchanged after image pixels changed behind a stable id (h=%016x) — frame would be skipped as static", h1)
@@ -216,7 +216,7 @@ func TestRegionCacheActuallyCaches(t *testing.T) {
 	var cached SoftRenderer // cache is on by default
 	scene := cardScene(hsla(0, 70, 50, 1), 0)
 	for i := 0; i < 3; i++ {
-		cached.Render(scene, 480, 320, 2)
+		cached.Render(scene, nil, 480, 320, 2)
 	}
 	st := cached.regions.stats
 	if st.Populated == 0 || st.Hits == 0 {

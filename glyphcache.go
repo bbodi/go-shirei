@@ -62,14 +62,23 @@ type GlyphBM struct {
 // of truth for quantization, used by both core's cache pass and the backend's draw
 // path so the two can never disagree. ok is false for non-glyph surfaces.
 func GlyphKeyForSurface(s *Surface) (GlyphKey, bool) {
-	if s.FontId == 0 || s.GlyphId == 0 {
+	return glyphKeyAt(s.FontId, s.GlyphId, s.Rect.Size[1])
+}
+
+// GlyphKeyForRun is GlyphKeyForSurface for one item in a GlyphRun span.
+func GlyphKeyForRun(g *GlyphRun) (GlyphKey, bool) {
+	return glyphKeyAt(g.FontId, g.GlyphId, g.Rect.Size[1])
+}
+
+func glyphKeyAt(font FontId, glyph GlyphId, em float32) (GlyphKey, bool) {
+	if font == 0 || glyph == 0 {
 		return GlyphKey{}, false
 	}
-	px := int(s.Rect.Size[1]*ui.Host.WindowScale + 0.5)
+	px := int(em*ui.Host.WindowScale + 0.5)
 	if px < 1 || px > 65535 {
 		return GlyphKey{}, false
 	}
-	return GlyphKey{FontId: s.FontId, GlyphId: s.GlyphId, Px: uint16(px)}, true
+	return GlyphKey{FontId: font, GlyphId: glyph, Px: uint16(px)}, true
 }
 
 // --- the LRU (map + intrusive list, O(1) touch, evict from tail) ---------------
@@ -81,7 +90,7 @@ func GlyphKeyForSurface(s *Surface) (GlyphKey, bool) {
 type glyphCacheEntry struct {
 	key      GlyphKey
 	bm       GlyphBM
-	lastUsed int64 // FrameNumber; never evict an entry used this frame
+	lastUsed uint64 // Cache-update generation; current-update entries cannot be evicted.
 }
 
 var (
@@ -95,30 +104,55 @@ var (
 	glyphsEvictedBuf []GlyphKey
 )
 
-// updateGlyphCache walks the frame's surfaces, ensures every used glyph is cached
-// (rasterize-on-miss), evicts down to budget, and returns this frame's deltas.
-// Called from RunFrameFn under the frame mutex when the cache is enabled.
-func updateGlyphCache(surfaces []Surface) (added, evicted []GlyphKey) {
+// updateGlyphCache walks the frame's surfaces and glyph-run items, ensures every
+// used glyph is cached (rasterize-on-miss), evicts down to budget, and returns
+// this frame's deltas. Called from RunFrameFn under the frame mutex when the
+// cache is enabled.
+func updateGlyphCache(surfaces []Surface, runs []GlyphRun) (added, evicted []GlyphKey) {
+	res.glyphUpdate++
+	update := res.glyphUpdate
 	res.glyphsAddedBuf = res.glyphsAddedBuf[:0]
 	res.glyphsEvictedBuf = res.glyphsEvictedBuf[:0]
 
-	for i := range surfaces {
-		key, ok := GlyphKeyForSurface(&surfaces[i])
-		if !ok {
-			continue
-		}
+	touch := func(key GlyphKey) {
 		if elem, ok := res.glyphMap[key]; ok {
-			// hit: mark most-recently-used
+			entry := elem.Value.(*glyphCacheEntry)
+			if entry.lastUsed == update {
+				return
+			}
 			res.glyphList.MoveToFront(elem)
-			elem.Value.(*glyphCacheEntry).lastUsed = ui.FrameNumber
-			continue
+			entry.lastUsed = update
+			return
 		}
-		// miss: rasterize and insert at the front
 		bm := rasterizeGlyph(key)
-		e := &glyphCacheEntry{key: key, bm: bm, lastUsed: ui.FrameNumber}
+		e := &glyphCacheEntry{key: key, bm: bm, lastUsed: update}
 		res.glyphMap[key] = res.glyphList.PushFront(e)
 		res.glyphBytes += glyphBMBytes(bm)
 		res.glyphsAddedBuf = append(res.glyphsAddedBuf, key)
+	}
+
+	for i := range surfaces {
+		s := &surfaces[i]
+		if s.GlyphRunCount > 0 {
+			if s.GlyphData != nil {
+				for _, dep := range s.GlyphData.dependencies {
+					if key, ok := glyphKeyAt(dep.font, dep.glyph, dep.em); ok {
+						touch(key)
+					}
+				}
+				continue
+			}
+			span := runs[s.GlyphRunFirst : s.GlyphRunFirst+s.GlyphRunCount]
+			for j := range span {
+				if key, ok := GlyphKeyForRun(&span[j]); ok {
+					touch(key)
+				}
+			}
+			continue
+		}
+		if key, ok := GlyphKeyForSurface(s); ok {
+			touch(key)
+		}
 	}
 
 	// evict least-recently-used until under budget, but never evict an entry used
@@ -126,12 +160,13 @@ func updateGlyphCache(surfaces []Surface) (added, evicted []GlyphKey) {
 	for res.glyphBytes > ui.Host.GlyphCacheBudgetBytes && res.glyphList.Len() > 0 {
 		back := res.glyphList.Back()
 		e := back.Value.(*glyphCacheEntry)
-		if e.lastUsed == ui.FrameNumber {
+		if e.lastUsed == update {
 			break
 		}
 		res.glyphList.Remove(back)
 		delete(res.glyphMap, e.key)
 		res.glyphBytes -= glyphBMBytes(e.bm)
+		forgetGlyphOutline(e.key.FontId, e.key.GlyphId)
 		res.glyphsEvictedBuf = append(res.glyphsEvictedBuf, e.key)
 	}
 

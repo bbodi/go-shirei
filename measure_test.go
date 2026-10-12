@@ -145,3 +145,22 @@ func TestCachedMeasureHitSkipsBuilder(t *testing.T) {
 		t.Fatalf("builder calls = %d after maxSize change, want 3", calls)
 	}
 }
+
+// BenchmarkMeasure exercises the uncached Measure path — the one virtual
+// lists with auto item heights hit per item (widgets/scroll.go heightOf).
+func BenchmarkMeasure(b *testing.B) {
+	InitFontSubsystem()
+	ResetInputSession()
+	ui.Host.WindowSize = Vec2{800, 600}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Measure(Vec2{300, 0}, func() {
+			Container(Attrs(Pad(8), Gap(4)), func() {
+				Label("first line of the measured item", FontSize(13))
+				Label("second line, a bit longer so it wraps at 300", FontSize(11))
+			})
+		})
+	}
+}

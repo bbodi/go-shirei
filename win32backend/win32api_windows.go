@@ -24,6 +24,7 @@ var (
 	procDefWindowProcW           = user32.NewProc("DefWindowProcW")
 	procDestroyWindow            = user32.NewProc("DestroyWindow")
 	procPostQuitMessage          = user32.NewProc("PostQuitMessage")
+	procPostMessageW             = user32.NewProc("PostMessageW")
 	procGetMessageW              = user32.NewProc("GetMessageW")
 	procTranslateMessage         = user32.NewProc("TranslateMessage")
 	procDispatchMessageW         = user32.NewProc("DispatchMessageW")
@@ -128,15 +129,17 @@ const (
 	wsVisible          = 0x10000000
 	cwUseDefault       = 0x80000000
 
-	swShow = 5
+	swShow           = 5
+	swShowNoActivate = 4
 
 	swpNozorder   = 0x0004
 	swpNoactivate = 0x0010
 
 	idcArrow = 32512
 
-	smCXScreen = 0 // GetSystemMetrics: primary monitor width in pixels
-	smCYScreen = 1 // GetSystemMetrics: primary monitor height in pixels
+	smCXScreen      = 0      // GetSystemMetrics: primary monitor width in pixels
+	smCYScreen      = 1      // GetSystemMetrics: primary monitor height in pixels
+	smRemoteSession = 0x1000 // SM_REMOTESESSION: non-zero under RDP
 
 	cfUnicodeText = 13
 	gmemMoveable  = 0x0002

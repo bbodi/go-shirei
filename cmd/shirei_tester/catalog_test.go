@@ -48,6 +48,27 @@ func TestPkgHasSnapshotMarker(t *testing.T) {
 	}
 }
 
+func TestPkgHasDriveMarker(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "plain_test.go"), []byte("package foo\nfunc TestPlain(t *testing.T) {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if pkgHasDriveMarker(dir) {
+		t.Fatal("plain package should not match drive marker")
+	}
+	src := "package foo\n\nfunc TestDriveFoo(t *testing.T) {\n\tdrive.Start(t, \".\")\n}\nfunc TestUnit(t *testing.T) {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "drive_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !pkgHasDriveMarker(dir) {
+		t.Fatal("expected drive.Start marker")
+	}
+	names := driveTestNames(dir)
+	if !names["TestDriveFoo"] || !names["TestUnit"] {
+		t.Fatalf("driveTestNames=%v", names)
+	}
+}
+
 func TestListTestsFromSource(t *testing.T) {
 	dir := t.TempDir()
 	src := `package foo
@@ -88,7 +109,8 @@ func TestDiscoverPackagesWalksFilesystem(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sub, "w_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Nested go.mod should not be walked as part of this module.
+	// Nested go.mod is its own module and must still be discovered
+	// (examples/ferry, examples/see_pprof).
 	nested := filepath.Join(root, "other")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
@@ -116,18 +138,63 @@ func TestDiscoverPackagesWalksFilesystem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(pkgs) != 2 {
+		t.Fatalf("pkgs = %d, want 2 (widgets + nested other)", len(pkgs))
+	}
+	byRel := map[string]*PackageItem{}
+	for _, p := range pkgs {
+		byRel[p.Rel] = p
+	}
+	w := byRel["widgets"]
+	if w == nil {
+		t.Fatalf("missing widgets in %d pkgs", len(pkgs))
+	}
+	if w.ImportPath != "example.com/scan/widgets" {
+		t.Fatalf("widgets ImportPath = %q", w.ImportPath)
+	}
+	if len(w.Tests) != 1 || w.Tests[0].Name != "TestSnapshotX" {
+		t.Fatalf("widgets tests = %+v", w.Tests)
+	}
+	o := byRel["other"]
+	if o == nil {
+		t.Fatalf("missing nested module other")
+	}
+	if o.ImportPath != "example.com/other" {
+		t.Fatalf("other ImportPath = %q (must come from nested go.mod)", o.ImportPath)
+	}
+	if len(o.Tests) != 1 || o.Tests[0].Name != "TestSnapshotY" {
+		t.Fatalf("other tests = %+v", o.Tests)
+	}
+}
+
+func TestDiscoverDriveOnlyPackage(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/drv\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "drive_test.go"), []byte(
+		"package drv\n\nfunc TestDriveFoo(t *testing.T) { drive.Start(t, \".\") }\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "unit_test.go"), []byte(
+		"package drv\n\nfunc TestUnit(t *testing.T) {}\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pkgs, err := discoverPackages(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(pkgs) != 1 {
-		t.Fatalf("pkgs = %d, want 1 (widgets only)", len(pkgs))
+		t.Fatalf("pkgs=%d want 1", len(pkgs))
 	}
 	p := pkgs[0]
-	if p.Rel != "widgets" {
-		t.Fatalf("Rel = %q, want widgets", p.Rel)
+	if !p.DriveOnly {
+		t.Fatal("expected DriveOnly")
 	}
-	if p.ImportPath != "example.com/scan/widgets" {
-		t.Fatalf("ImportPath = %q", p.ImportPath)
-	}
-	if len(p.Tests) != 1 || p.Tests[0].Name != "TestSnapshotX" {
-		t.Fatalf("tests = %+v", p.Tests)
+	if len(p.Tests) != 1 || p.Tests[0].Name != "TestDriveFoo" || !p.Tests[0].Drive {
+		t.Fatalf("tests=%+v", p.Tests)
 	}
 }
 

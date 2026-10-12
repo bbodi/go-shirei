@@ -24,11 +24,6 @@ enum {
 };
 
 static void on_cmd(struct android_app* app, int32_t cmd) {
-	if (cmd == APP_CMD_INIT_WINDOW && app->window) {
-		// CPU pixels in RGBA byte order; 0,0 keeps the full surface size.
-		ANativeWindow_setBuffersGeometry(app->window, 0, 0,
-			WINDOW_FORMAT_RGBA_8888);
-	}
 	shireiAndroidCmd(cmd);
 }
 
@@ -141,6 +136,17 @@ int shirei_android_window_width(void) {
 int shirei_android_window_height(void) {
 	if (!gApp || !gApp->window) return 0;
 	return ANativeWindow_getHeight(gApp->window);
+}
+
+void *shirei_android_native_window(void) {
+	if (!gApp) return NULL;
+	return gApp->window;
+}
+
+void shirei_android_use_cpu_buffers(void) {
+	if (!gApp || !gApp->window) return;
+	ANativeWindow_setBuffersGeometry(gApp->window, 0, 0,
+		WINDOW_FORMAT_RGBA_8888);
 }
 
 int shirei_android_lock_window(void** bits, int* w, int* h, int* stridePx) {

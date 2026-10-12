@@ -65,5 +65,5 @@ func PhysicalSize(path string, fi os.FileInfo) int64 {
 	if !ok {
 		return fi.Size()
 	}
-	return st.Blocks * 512
+	return int64(st.Blocks) * 512
 }

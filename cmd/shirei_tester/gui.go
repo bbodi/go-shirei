@@ -8,6 +8,7 @@ import (
 	"time"
 
 	. "go.hasen.dev/shirei"
+	"go.hasen.dev/shirei/drive"
 	. "go.hasen.dev/shirei/widgets"
 )
 
@@ -29,9 +30,20 @@ func (s *AppState) rootView() {
 				FontSize(12), TextColor(0, 0, 45, 1))
 			Filler(1)
 			s.lock()
+			nMis := s.mismatchCount()
 			nErr := s.errorCount()
+			review := s.reviewDiffs
 			s.unlock()
-			if nErr > 0 {
+			if review {
+				if ButtonExt("Tests", ButtonAttrs{}, DefaultButtonLook()) {
+					s.reviewDiffs = false
+				}
+			} else if nMis > 0 {
+				if ButtonExt(fmt.Sprintf("All diffs (%d)", nMis), ButtonAttrs{Accent: AccentBlue}, DefaultButtonLook()) {
+					s.reviewDiffs = true
+				}
+			}
+			if !review && nErr > 0 {
 				if ButtonExt("Next fail", ButtonAttrs{}, DefaultButtonLook()) {
 					s.lock()
 					s.moveToError(1)
@@ -65,15 +77,23 @@ func (s *AppState) rootView() {
 			Label(errMsg, FontSize(12), TextColor(10, 70, 40, 1))
 		}
 		Label(rootLabel, FontSize(11), TextColor(0, 0, 55, 1))
-		Label("↑↓ select · Enter re-run · ⌘/Ctrl+F find · F8 / ⇧F8 next/prev fail · drag list edge to resize",
-			FontSize(10), TextColor(0, 0, 50, 1))
+		if s.reviewDiffs {
+			Label("Drag the wipe (green = actual, red = golden) · Accept on each card · click the name for the test",
+				FontSize(10), TextColor(0, 0, 50, 1))
+		} else {
+			Label("↑↓ select · Enter re-run · ⌘/Ctrl+F find · F8 / ⇧F8 next/prev fail · drag list edge to resize",
+				FontSize(10), TextColor(0, 0, 50, 1))
+		}
 
-		// Body: list | splitter | detail
-		Container(Attrs(Row, Grow(1), Expand, Clip), func() {
-			s.treePanel()
-			s.listSplitter()
-			s.detailPanel()
-		})
+		if s.reviewDiffs {
+			s.diffsGallery()
+		} else {
+			Container(Attrs(Row, Grow(1), Expand, Clip), func() {
+				s.treePanel()
+				s.listSplitter()
+				s.detailPanel()
+			})
+		}
 		if scanning {
 			// Keep the loop alive while discovery finishes (go list is ~200ms).
 			RequestNextFrame()
@@ -96,7 +116,8 @@ func (s *AppState) rootView() {
 	DebugMessage(fmt.Sprintf("paint=%.1fms", paintMs))
 	DebugMessage(fmt.Sprintf("work=%.1fms", workMs))
 	DebugMessage(fmt.Sprintf("~%.0ffps", fps))
-	ProfileButton("shirei_tester") // floating CPU profiler when DEBUG=1
+	ProfileButton("shirei_tester") // floating CPU profiler when SHIREI_PPROF=1
+	FPSCounter()
 }
 
 const (
@@ -154,7 +175,7 @@ func (s *AppState) handleFindShortcut() {
 // handleListKeys moves selection with arrow keys (IDE-style) and F8 next/prev fail.
 // When the find bar had focus last frame, arrows/enter stay with the find field.
 func (s *AppState) handleListKeys(findFocused bool) {
-	if findFocused {
+	if findFocused || s.reviewDiffs {
 		return
 	}
 	in := GetFrameInput()
@@ -243,7 +264,7 @@ func (s *AppState) treePanel() {
 			// Snapshot under the mutex once per frame — runners mutate TestItem concurrently.
 			pkgs, selPkg, selTest, wantScroll := s.snapshotTree()
 			if len(pkgs) == 0 {
-				Label("No snapshot packages found.", FontSize(12), TextColor(0, 0, 50, 1))
+				Label("No snapshot or drive packages found.", FontSize(12), TextColor(0, 0, 50, 1))
 				return
 			}
 
@@ -621,12 +642,15 @@ func statusLabel(st testStatus) {
 func snapIndicatorView(test treeTestView) {
 	const slot float32 = 16
 	Container(Attrs(FixSize(slot, slot), Center, NoAnimate), func() {
-		if !test.SawReport {
+		if !test.SawReport && !test.HasTrace {
 			return
 		}
 		clr := Vec4{140, 50, 35, 1}
 		if test.HasMismatch {
 			clr = Vec4{10, 70, 45, 1}
+		}
+		if test.HasTrace && !test.SawReport {
+			clr = Vec4{210, 40, 45, 1}
 		}
 		Icon(SymImage, FontSize(13), TextColorVec(clr))
 	})
@@ -655,7 +679,9 @@ func (s *AppState) detailPanel() {
 		})
 		Label(tv.PkgDir, FontSize(11), TextColor(0, 0, 50, 1))
 
-		if len(tv.Snaps) > 0 {
+		if tv.Drive || len(tv.Trace) > 0 {
+			s.driveTraceView(tv)
+		} else if len(tv.Snaps) > 0 {
 			Label("Snapshots", FontSize(13), FontWeight(WeightBold))
 			Container(Attrs(Row, Gap(6), Wrap), func() {
 				for i, sn := range tv.Snaps {
@@ -677,29 +703,29 @@ func (s *AppState) detailPanel() {
 				FontSize(11), TextColor(0, 0, 50, 1))
 		}
 
-		// Diff view — operate on a value copy from the snapshot.
-		var snap *SnapResult
-		if selSnap >= 0 && selSnap < len(tv.Snaps) {
-			snap = &tv.Snaps[selSnap]
-		} else if len(tv.Snaps) > 0 {
-			for i := range tv.Snaps {
-				if tv.Snaps[i].Status == "mismatch" {
-					snap = &tv.Snaps[i]
-					break
+		if !tv.Drive && len(tv.Trace) == 0 {
+			var snap *SnapResult
+			if selSnap >= 0 && selSnap < len(tv.Snaps) {
+				snap = &tv.Snaps[selSnap]
+			} else if len(tv.Snaps) > 0 {
+				for i := range tv.Snaps {
+					if tv.Snaps[i].Status == "mismatch" {
+						snap = &tv.Snaps[i]
+						break
+					}
+				}
+				if snap == nil {
+					snap = &tv.Snaps[0]
 				}
 			}
-			if snap == nil {
-				snap = &tv.Snaps[0]
+			if snap != nil {
+				s.snapViewer(tv.PkgDir, tv.Name, *snap)
 			}
 		}
 
-		if snap != nil {
-			s.snapViewer(tv.PkgDir, tv.Name, *snap)
-		}
-
-		if tv.Output != "" {
+		if tv.Output != "" && !tv.Drive && len(tv.Trace) == 0 {
 			Label("go test output", FontSize(12), FontWeight(WeightBold))
-			Container(Attrs(Viewport, FixSize(0, 120), Expand,
+			Container(Attrs(Expand, Clip, MinHeight(40), MaxHeight(160),
 				Background(0, 0, 97, 1), Corners(4), Pad(6)), func() {
 				ScrollOnInput()
 				const chunk = 2000
@@ -714,6 +740,84 @@ func (s *AppState) detailPanel() {
 	})
 }
 
+func (s *AppState) driveTraceView(tv testView) {
+	Label("Drive trace", FontSize(13), FontWeight(WeightBold))
+	if tv.Status == statusRunning {
+		Label("Running — the app window is the live UI. Trace appears when the test finishes.",
+			FontSize(11), TextColor(0, 0, 50, 1))
+	}
+	if len(tv.Trace) == 0 && tv.Status != statusRunning {
+		Label("No trace. Call drive.Shot at the beats you want to review, and run from tester.",
+			FontSize(11), TextColor(0, 0, 50, 1))
+		return
+	}
+	paneW := GetContentWidth()
+	imgW := paneW - 28
+	if imgW < 160 {
+		imgW = 160
+	}
+	// Leftover height of the detail pane — not a nested FixSize viewport.
+	Container(Attrs(Viewport, Background(0, 0, 97, 1), Corners(4), Pad(8)), func() {
+		ScrollOnInput()
+		for _, ev := range tv.Trace {
+			switch ev.Kind {
+			case "cmd":
+				if strings.HasPrefix(ev.Sent, "screenshot ") {
+					continue
+				}
+				s.driveCmdLine(ev)
+			case "comment":
+				if ev.Name != "" {
+					Label(ev.Name, FontSize(12), FontWeight(WeightBold))
+				}
+			case "shot":
+				s.driveShotBlock(ev, imgW)
+			}
+		}
+		if tv.Output != "" {
+			Label("go test output", FontSize(12), FontWeight(WeightBold))
+			out := tv.Output
+			const chunk = 4000
+			if len(out) > chunk {
+				out = out[len(out)-chunk:]
+			}
+			Label(out, FontSize(11), TextColor(0, 0, 40, 1))
+		}
+		ScrollBars()
+	})
+}
+
+func (s *AppState) driveCmdLine(ev drive.TraceEvent) {
+	Label("> "+ev.Sent, FontSize(11))
+	recv := strings.TrimSpace(ev.Recv)
+	if recv == "" {
+		return
+	}
+	lines := strings.Split(recv, "\n")
+	const max = 16
+	if len(lines) > max {
+		lines = append(append([]string{}, lines[:max]...), "…")
+	}
+	for _, ln := range lines {
+		Label("< "+ln, FontSize(11), TextColor(0, 0, 40, 1))
+	}
+}
+
+func (s *AppState) driveShotBlock(ev drive.TraceEvent, imgW float32) {
+	name := ev.Name
+	if name == "" {
+		name = "shot"
+	}
+	Container(Attrs(Gap(4), Pad2(8, 8), Corners(6), Background(0, 0, 100, 1), Expand), func() {
+		Label(name, FontSize(12), FontWeight(WeightBold))
+		if ev.Path != "" && s.pathExists(ev.Path) {
+			Image(ev.Path, Vec2{imgW, 0})
+		} else {
+			Label("(missing screenshot)", FontSize(11), TextColor(10, 60, 40, 1))
+		}
+	})
+}
+
 // snapWipeHLOn: purple tint on differing pixels when highlight is enabled.
 // Full-resolution pixel compare — off by default (see ShowWipeDiffHL).
 var snapWipeHLOn = Vec4{280, 50, 48, 0.5}
@@ -723,7 +827,7 @@ func (s *AppState) snapViewer(pkgDir, testName string, snap SnapResult) {
 
 	// Pane width from the Extrinsic detail panel (current container). Capture
 	// before nesting into content-sized chrome that a wide image could inflate.
-	paneW := GetAvailableSize()[0]
+	paneW := GetContentWidth()
 
 	Container(Attrs(Gap(6), Expand, Clip), func() {
 		Container(Attrs(Row, CrossMid, Gap(8), Expand, Clip), func() {
@@ -754,7 +858,7 @@ func (s *AppState) snapViewer(pkgDir, testName string, snap SnapResult) {
 		}
 
 		if both {
-			s.snapWipe(snap.Golden, snap.Actual, paneW)
+			s.snapWipe(snap.Golden, snap.Actual, Vec2{paneW, 0})
 		} else if s.pathExists(snap.Golden) {
 			s.imageCard("Golden", snap.Golden)
 		} else if s.pathExists(snap.Actual) {
@@ -766,8 +870,8 @@ func (s *AppState) snapViewer(pkgDir, testName string, snap SnapResult) {
 }
 
 // snapWipe: left = actual (new), right = golden (old); drag to compare.
-// Display = image pixels, scaled down only if wider than maxW (detail pane).
-func (s *AppState) snapWipe(golden, actual string, maxW float32) {
+// MaxSize width is the pane budget; a zero height leaves aspect unconstrained.
+func (s *AppState) snapWipe(golden, actual string, maxSize Vec2) {
 	type wipePos struct {
 		T    float32
 		Init bool
@@ -787,7 +891,6 @@ func (s *AppState) snapWipe(golden, actual string, maxW float32) {
 	if s.ShowWipeDiffHL {
 		hl = snapWipeHLOn
 	}
-	// Size width = pane budget; height 0 → aspect only (no height cap).
 	ImageWipe(ImageWipeAttrs{
 		LeftImage:          leftId,
 		RightImage:         rightId,
@@ -798,7 +901,7 @@ func (s *AppState) snapWipe(golden, actual string, maxW float32) {
 		LeftLabel:          "",
 		RightLabel:         "",
 		DiffHighlightColor: hl,
-		MaxSize:            Vec2{maxW, 0},
+		MaxSize:            maxSize,
 	})
 }
 
@@ -816,6 +919,67 @@ func (s *AppState) imageCard(title, path string) {
 		Container(Attrs(FixSize(280, 200), Clip, Background(0, 0, 92, 1), Corners(4)), func() {
 			Image(path, Vec2{280, 200})
 		})
+	})
+}
+
+func (s *AppState) diffsGallery() {
+	items := s.mismatchSnaps()
+	Container(Attrs(Grow(1), Expand, Extrinsic, Clip,
+		Background(0, 0, 100, 1), BorderWidth(1), BorderColor(0, 0, 82, 1), Corners(8), Pad(10), Gap(8)), func() {
+		Container(Attrs(Row, CrossMid, Gap(8), Expand), func() {
+			Label(fmt.Sprintf("%d mismatches", len(items)), FontSize(13), FontWeight(WeightBold))
+			Filler(1)
+			if len(items) > 0 {
+				CheckBox(&s.ShowWipeDiffHL, "Highlight diffs")
+			}
+		})
+		if len(items) == 0 {
+			Label("No remaining image diffs.", FontSize(13), TextColor(0, 0, 45, 1))
+			return
+		}
+		Container(Attrs(Grow(1), Expand, Clip), func() {
+			VirtualListView(&s.diffListKey, len(items),
+				func(i int) any { return items[i].Golden + "\x00" + items[i].Actual },
+				nil,
+				func(i int, w float32) {
+					s.diffCard(items[i], w)
+				},
+			)
+		})
+	})
+}
+
+func (s *AppState) diffCard(m mismatchItem, w float32) {
+	Container(Attrs(Expand, MaxWidth(w), Pad(10), Gap(8),
+		Background(0, 0, 97, 1), Corners(6), BorderWidth(1), BorderColor(0, 0, 88, 1)), func() {
+		Container(Attrs(Row, CrossMid, Gap(8), Expand), func() {
+			Container(Attrs(Grow(1), Clip), func() {
+				st := ProcessButtonEvents(false)
+				if st.Hovered {
+					ModAttrs(Background(210, 40, 96, 1), Corners(4))
+				}
+				if st.Clicked {
+					s.selectMismatch(m.PkgDir, m.Test, m.Name)
+				}
+				Label(m.PkgLabel+"  ·  "+m.Test, FontSize(11), TextColor(0, 0, 50, 1))
+				Label(m.Name, FontSize(14), FontWeight(WeightBold))
+			})
+			both := s.pathExists(m.Golden) && s.pathExists(m.Actual)
+			if both {
+				if ButtonExt("Accept", ButtonAttrs{Accent: AccentMeadow}, DefaultButtonLook()) {
+					s.acceptSnap(m.PkgDir, m.Test, m.Name, m.Golden, m.Actual)
+				}
+			}
+		})
+		if s.pathExists(m.Golden) && s.pathExists(m.Actual) {
+			wipeW := w - 20
+			if wipeW < 80 {
+				wipeW = 80
+			}
+			s.snapWipe(m.Golden, m.Actual, Vec2{wipeW, 0})
+		} else {
+			Label("missing golden or actual", FontSize(11), TextColor(10, 60, 40, 1))
+		}
 	})
 }
 

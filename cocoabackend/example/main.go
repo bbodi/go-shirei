@@ -9,6 +9,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
@@ -26,8 +27,10 @@ func main() {
 	// verification); otherwise it opens a live window. RenderToPNG is core
 	// shirei's (via the dot-import) — software rendering lives in core, so
 	// PNG dumping isn't backend-specific.
-	if len(os.Args) >= 3 && os.Args[1] == "--png" {
-		if err := RenderToPNG(os.Args[2], 640, 480, frameFn); err != nil {
+	png := flag.String("png", "", "write one settled frame to PATH and exit")
+	flag.Parse()
+	if *png != "" {
+		if err := RenderToPNG(*png, 640, 480, frameFn); err != nil {
 			fmt.Println("render to png failed:", err)
 		}
 		return

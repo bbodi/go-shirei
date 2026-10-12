@@ -27,8 +27,8 @@ type ShadowMapKey struct {
 // returns an image handle via the shared image registry (getOrPutImage).
 func _IMBlurShadow(size Vec2, corners Vec4, radius float32, alpha float32) ImageId {
 	params := ShadowMapKey{
-		w:  int(size[0]),
-		h:  int(size[1]),
+		w:  int(Roundf32(size[0])),
+		h:  int(Roundf32(size[1])),
 		c0: uint8(corners[0]),
 		c1: uint8(corners[1]),
 		c2: uint8(corners[2]),
@@ -36,21 +36,40 @@ func _IMBlurShadow(size Vec2, corners Vec4, radius float32, alpha float32) Image
 		r:  uint8(radius * 10),
 		a:  uint8(alpha * 0xff),
 	}
-	return getOrPutImage(params, func() *ImageData {
+	id := getOrPutImage(params, func() *ImageData {
 		return _GenerateBlurShadow(size, corners, radius, alpha)
 	})
+	// Stamp pixel size must match this card. A hit with a different bitmap
+	// (recycled ImageId, stale slot) is replaced. Dimensions use the same
+	// Roundf32(size+blur pad) as generate.
+	wantW, wantH := shadowStampPx(size, radius)
+	if img := LookupImage(id); img != nil {
+		b := img.RGBA.Bounds()
+		if b.Dx() == wantW && b.Dy() == wantH {
+			return id
+		}
+	}
+	return putImage(params, _GenerateBlurShadow(size, corners, radius, alpha))
+}
+
+func shadowStampPx(size Vec2, radius float32) (w, h int) {
+	w = int(Roundf32(size[0] + radius*4))
+	h = int(Roundf32(size[1] + radius*4))
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	return w, h
 }
 
 func _GenerateBlurShadow(size Vec2, corners Vec4, radius float32, alpha float32) *ImageData {
-	// the size is the size of the rect plus space for the blurring radius!
-	width := size[0] + radius*4
-	height := size[1] + radius*4
-	// fmt.Println("Size:", size, "Blur:", radius, "width, height:", width, height)
+	width, height := shadowStampPx(size, radius)
 
-	var rect = image.NewRGBA(image.Rect(0, 0, int(width), int(height)))
-	// fmt.Println("image width:", rect.Bounds().Dx())
+	var rect = image.NewRGBA(image.Rect(0, 0, width, height))
 
-	var p = vector.NewRasterizer(int(width), int(height))
+	var p = vector.NewRasterizer(width, height)
 	p.DrawOp = draw.Over
 	// based on gio/op/clip/shapes.go
 	// based on https://pomax.github.io/bezierinfo/#circles_cubic

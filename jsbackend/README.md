@@ -1,7 +1,9 @@
 # jsbackend
 
-Browser/wasm shell for shirei. Same contract as every other software backend:
-sample input, `RunFrameFn`, `SoftRenderer.RenderInto`, present a bitmap.
+Browser/wasm shell for shirei. Same contract as every other backend: sample
+input, `RunFrameFn`, present. Default present is GLES 3.00 over WebGL2
+(`gpurender`). `SHIREI_GPU=0`, `window.SHIREI_GPU=0`, or `?shirei_gpu=0`
+falls back to `SoftRenderer` + `putImageData`. No WebGL2 also falls back.
 
 ## Build a static site
 
@@ -87,11 +89,19 @@ Default HTML (from `shirei_web`) is a shell + canvas:
 ```
 
 `SetupWindow(title, w, h)` is the **content** size (same contract as
-macOS/Win32). **Top-level** pages float a shell of height `h + 34` on the page
-background with **client-side decorations** (same idea as Wayland CSD): a
-soft-rendered title bar (drag to move, close button) and an edge hit zone to
-resize. The app body keeps `w×h`, and after each frame `GetHost().WindowSize`
-reports that content size (not the shell).
+macOS/Win32). **Top-level desktop-sized** pages float a shell of height
+`h + 34` inside `#shirei-root` with **client-side decorations** (same idea as
+Wayland CSD): a soft-rendered title bar (drag to move, close button) and an
+edge hit zone to resize. `#shirei-root` fills leftover space in the page
+(siblings such as a source strip keep theirs); the shell is clamped to that
+slot minus a small margin. The app body sees the resulting content size;
+after each frame `GetHost().WindowSize` reports that content size (not the
+shell).
+
+**Mobile hosts** (iOS, iPadOS, Android) and **short or narrow host slots**
+(width ≤ 700 or height ≤ 500) fill `#shirei-root` with no chrome, same as
+the iOS and Android backends. Rotating the phone or resizing a desktop window
+across that threshold switches the shell.
 
 **Inside an iframe** there is no CSD: the document shrink-wraps to exactly
 `w×h` and posts:

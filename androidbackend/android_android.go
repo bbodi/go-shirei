@@ -1,9 +1,10 @@
 //go:build android
 
 // Package androidbackend is a direct-Android (NativeActivity) backend for
-// shirei. The vendored NDK native_app_glue owns activity lifecycle plumbing;
-// all rasterization is done by shirei's core software renderer straight into
-// the ANativeWindow's locked CPU buffer (RGBA via Host.PixelOrder).
+// shirei. The vendored NDK native_app_glue owns activity lifecycle plumbing.
+// GLES (shirei/gpurender) encodes into an EGL window surface on the
+// ANativeWindow unless SHIREI_GPU=0 or EGL init fails; SoftRenderer +
+// ANativeWindow_lock is the fallback (RGBA via Host.PixelOrder).
 //
 // Input: multi-touch fills InputState.Touches (+ FrameInput began/ended).
 // Independently, the primary finger is synthesized into mouse + wheel
@@ -35,6 +36,7 @@ import "C"
 
 import (
 	"bufio"
+	"fmt"
 	"math"
 	"os"
 	"runtime"
@@ -44,7 +46,9 @@ import (
 	"unicode/utf8"
 	"unsafe"
 
+	"go.hasen.dev/generic"
 	"go.hasen.dev/shirei"
+	"go.hasen.dev/shirei/gpurender"
 )
 
 // glyphCacheBudget caps total cached glyph-bitmap bytes (enables the shared
@@ -111,6 +115,9 @@ var (
 	lastPresentedHash                      uint64
 	havePresented                          bool
 	presentL, presentT, presentW, presentH int
+
+	gpuOK    bool
+	gpuTried bool
 
 	// pendingPark: after a gesture ends, move MousePoint offscreen.
 	pendingPark bool
@@ -218,7 +225,7 @@ func Run(fn shirei.FrameFn) {
 			// Back button / activity teardown. NativeActivity may recreate the
 			// activity in the same process, which would re-enter main() — exit
 			// instead so every launch starts clean.
-			os.Exit(0)
+			generic.ExitWithCleanup(0)
 		}
 		if flags&C.SHIREI_POLL_HAS_WINDOW == 0 {
 			havePresented = false
@@ -390,9 +397,35 @@ func produceAndPresent() {
 
 	if havePresented && out.SurfacesHash == lastPresentedHash &&
 		conL == presentL && conT == presentT && conW == presentW && conH == presentH {
+		shirei.EmitFrameMetrics()
 		return
 	}
 
+	tryGPU(devW, devH)
+	if gpuOK {
+		win := C.shirei_android_native_window()
+		if win == nil {
+			return
+		}
+		if err := gpurender.BindWindow(unsafe.Pointer(win), devW, devH); err != nil {
+			fmt.Fprintf(os.Stderr, "gpurender: bind: %v\n", err)
+			return
+		}
+		dest := &gpurender.WindowDest{WinW: devW, WinH: devH, Left: conL, Top: conT, W: conW, H: conH}
+		if err := gpurender.Render(dest.Handle(), conW, conH, scale, out.Surfaces, out.GlyphRuns, out.GlyphsAdded, out.GlyphsEvicted, false); err != nil {
+			fmt.Fprintf(os.Stderr, "gpurender: %v\n", err)
+			return
+		}
+		lastPresentedHash = out.SurfacesHash
+		presentL, presentT, presentW, presentH, havePresented = conL, conT, conW, conH, true
+		t := &shirei.ActiveUI().FrameTimings
+		t.Painted = true
+		t.PaintEnd = time.Now()
+		shirei.EmitFrameMetrics()
+		return
+	}
+
+	C.shirei_android_use_cpu_buffers()
 	var bits unsafe.Pointer
 	var w, h, stridePx C.int
 	if C.shirei_android_lock_window(&bits, &w, &h, &stridePx) == 0 {
@@ -419,11 +452,43 @@ func produceAndPresent() {
 	clearBandsWhite(dst, strideBytes, bufW, bufH, rl, rt, rw, rh)
 	sub := dst[rt*strideBytes+rl*4:]
 	// SoftRenderer writes RGBA (Host.PixelOrder) straight into the locked window.
-	softRenderer.RenderInto(sub, strideBytes, rw, rh, scale, out.Surfaces)
+	softRenderer.RenderInto(sub, strideBytes, rw, rh, scale, out.Surfaces, out.GlyphRuns)
 	C.shirei_android_unlock_post()
 
 	lastPresentedHash = out.SurfacesHash
 	presentL, presentT, presentW, presentH, havePresented = conL, conT, conW, conH, true
+	t := &shirei.ActiveUI().FrameTimings
+	t.Painted = true
+	t.PaintEnd = time.Now()
+	shirei.EmitFrameMetrics()
+}
+
+func tryGPU(devW, devH int) {
+	if gpuTried {
+		return
+	}
+	gpuTried = true
+	if generic.EnvFalsy("SHIREI_GPU") {
+		C.shirei_android_use_cpu_buffers()
+		return
+	}
+	win := C.shirei_android_native_window()
+	if win == nil {
+		gpuTried = false
+		return
+	}
+	if err := gpurender.Init(); err != nil {
+		fmt.Fprintf(os.Stderr, "gpurender: fallback to software: %v\n", err)
+		C.shirei_android_use_cpu_buffers()
+		return
+	}
+	if err := gpurender.BindWindow(unsafe.Pointer(win), devW, devH); err != nil {
+		fmt.Fprintf(os.Stderr, "gpurender: fallback to software: %v\n", err)
+		C.shirei_android_use_cpu_buffers()
+		return
+	}
+	gpuOK = true
+	fmt.Fprintf(os.Stderr, "gpurender: %s\n", gpurender.DeviceName())
 }
 
 // clearBandsWhite fills every surface pixel outside the content rect with
@@ -463,6 +528,9 @@ func shireiAndroidCmd(cmd C.int32_t) {
 		shirei.RequestNextFrame()
 	case C.APP_CMD_TERM_WINDOW:
 		havePresented = false
+		if gpuOK {
+			gpurender.UnbindWindow()
+		}
 	case C.APP_CMD_WINDOW_RESIZED, C.APP_CMD_CONFIG_CHANGED,
 		C.APP_CMD_CONTENT_RECT_CHANGED:
 		shirei.RequestNextFrame()

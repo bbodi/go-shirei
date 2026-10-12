@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"go.hasen.dev/shirei"
+	"go.hasen.dev/shirei/drive"
 )
 
 // goTestEvent is a subset of `go test -json` event fields.
@@ -104,6 +105,7 @@ func (s *AppState) resetTargetsLocked(spec runSpec) {
 		t.Output = ""
 		t.Snaps = nil
 		t.SawReport = false
+		t.Trace = nil
 	})
 }
 
@@ -240,13 +242,80 @@ func packageTestPath(rel string) string {
 	return "./" + rel
 }
 
-// runAllArgs builds `go test` package args for a Run-all invocation.
+// runAllArgs builds `go test` package args for a Run-all invocation relative
+// to the scan root (one module). Prefer runAllInvocations when packages may
+// live in nested modules.
 func runAllArgs(pkgs []*PackageItem) []string {
 	args := make([]string, 0, len(pkgs))
 	for _, p := range pkgs {
 		args = append(args, packageTestPath(p.Rel))
 	}
 	return args
+}
+
+// testInvocation is one `go test` process: packages that share a go.mod.
+type testInvocation struct {
+	Dir     string
+	PkgArgs []string
+	Run     string // optional -run regexp, already unquoted test name
+}
+
+// nearestModuleDir is the closest ancestor of dir that contains go.mod,
+// stopping at scanRoot. No go.mod → scanRoot (same as today's Run-all cwd).
+func nearestModuleDir(dir, scanRoot string) string {
+	scanRoot = filepath.Clean(scanRoot)
+	d := filepath.Clean(dir)
+	for {
+		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
+			return d
+		}
+		if d == scanRoot {
+			return scanRoot
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return scanRoot
+		}
+		d = parent
+	}
+}
+
+// runAllInvocations groups snapshot packages by enclosing module so Run-all
+// can `go test` nested apps (ferry, see_pprof) from their own go.mod.
+func runAllInvocations(scanRoot string, pkgs []*PackageItem) []testInvocation {
+	type group struct {
+		dir  string
+		pkgs []*PackageItem
+	}
+	var order []string
+	by := map[string]*group{}
+	for _, p := range pkgs {
+		if p.DriveOnly {
+			continue
+		}
+		m := nearestModuleDir(p.Dir, scanRoot)
+		g, ok := by[m]
+		if !ok {
+			g = &group{dir: m}
+			by[m] = g
+			order = append(order, m)
+		}
+		g.pkgs = append(g.pkgs, p)
+	}
+	out := make([]testInvocation, 0, len(order))
+	for _, m := range order {
+		g := by[m]
+		args := make([]string, 0, len(g.pkgs))
+		for _, p := range g.pkgs {
+			rel, err := filepath.Rel(m, p.Dir)
+			if err != nil {
+				rel = p.Rel
+			}
+			args = append(args, packageTestPath(rel))
+		}
+		out = append(out, testInvocation{Dir: m, PkgArgs: args})
+	}
+	return out
 }
 
 func (s *AppState) doRun(id int, root string, pkgs []*PackageItem, spec runSpec) {
@@ -297,6 +366,13 @@ func (s *AppState) doRun(id int, root string, pkgs []*PackageItem, spec runSpec)
 	f0.Close()
 	defer os.Remove(reportPath)
 
+	traceRoot := filepath.Join(os.TempDir(), fmt.Sprintf("shirei-drive-trace-%d-%d", id, time.Now().UnixNano()))
+	if err := os.MkdirAll(traceRoot, 0o755); err != nil {
+		abortEarly(err.Error())
+		return
+	}
+	s.rememberTraceDir(traceRoot)
+
 	stopTail := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -309,97 +385,129 @@ func (s *AppState) doRun(id int, root string, pkgs []*PackageItem, spec runSpec)
 		wg.Wait()
 	}()
 
-	args := []string{"test", "-json", "-count=1"}
-	var dir string
+	var invs []testInvocation
 	if spec.All {
-		dir = root
-		args = append(args, runAllArgs(pkgs)...)
+		invs = runAllInvocations(root, pkgs)
 	} else if spec.PkgDir != "" {
-		dir = spec.PkgDir
-		args = append(args, ".")
+		inv := testInvocation{Dir: spec.PkgDir, PkgArgs: []string{"."}}
 		if spec.Test != "" {
-			args = append(args, "-run", "^"+regexp.QuoteMeta(spec.Test)+"$")
+			inv.Run = spec.Test
 		}
+		invs = []testInvocation{inv}
 	} else {
 		abortEarly("nothing to run")
 		return
 	}
-
-	// Check cancel again before spawning (Stop between startRun and here).
-	s.lock()
-	if s.runCancelledLocked(id) {
-		s.unlock()
+	if len(invs) == 0 {
+		abortEarly("nothing to run")
 		return
 	}
-	s.unlock()
 
-	cmd := exec.Command("go", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), shirei.EnvSnapReport+"="+reportPath)
-	setTestProcAttr(cmd)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		abortEarly(err.Error())
-		return
-	}
-	cmd.Stderr = cmd.Stdout
-
-	if err := cmd.Start(); err != nil {
-		abortEarly(err.Error())
-		return
-	}
-	started = true
-
-	// Register only after Start so stopAll can always kill a live Process.
-	runMu.Lock()
-	runCmds[id] = cmd
-	runMu.Unlock()
-	s.lock()
-	if ar := s.runs[id]; ar != nil {
-		ar.cmd = cmd
-		if ar.cancelled {
-			s.unlock()
-			killTestCmd(cmd)
-			_ = cmd.Wait()
-			return
-		}
-	}
-	s.unlock()
-
-	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
+	cancelled := false
+	for _, inv := range invs {
 		s.lock()
-		cancelled := s.runCancelledLocked(id)
+		cancelled = s.runCancelledLocked(id)
 		s.unlock()
 		if cancelled {
 			break
 		}
-		line := sc.Text()
-		s.appendLog(line)
-		var ev goTestEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			continue
+
+		args := []string{"test", "-json", "-count=1"}
+		args = append(args, inv.PkgArgs...)
+		if inv.Run != "" {
+			args = append(args, "-run", "^"+regexp.QuoteMeta(inv.Run)+"$")
 		}
-		s.applyGoEvent(ev, pkgs, id)
-		shirei.RequestNextFrame()
+
+		cmd := exec.Command("go", args...)
+		cmd.Dir = inv.Dir
+		cmd.Env = append(os.Environ(),
+			shirei.EnvSnapReport+"="+reportPath,
+			drive.EnvTrace+"="+traceRoot,
+		)
+		setTestProcAttr(cmd)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			abortEarly(err.Error())
+			return
+		}
+		cmd.Stderr = cmd.Stdout
+
+		if err := cmd.Start(); err != nil {
+			abortEarly(err.Error())
+			return
+		}
+		started = true
+
+		// Register only after Start so stopAll can always kill a live Process.
+		runMu.Lock()
+		runCmds[id] = cmd
+		runMu.Unlock()
+		s.lock()
+		if ar := s.runs[id]; ar != nil {
+			ar.cmd = cmd
+			if ar.cancelled {
+				s.unlock()
+				killTestCmd(cmd)
+				_ = cmd.Wait()
+				cancelled = true
+				break
+			}
+		}
+		s.unlock()
+
+		sc := bufio.NewScanner(stdout)
+		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for sc.Scan() {
+			s.lock()
+			cancelled = s.runCancelledLocked(id)
+			s.unlock()
+			if cancelled {
+				break
+			}
+			line := sc.Text()
+			s.appendLog(line)
+			var ev goTestEvent
+			if err := json.Unmarshal([]byte(line), &ev); err != nil {
+				continue
+			}
+			s.applyGoEvent(ev, pkgs, id)
+			shirei.RequestNextFrame()
+		}
+		s.lock()
+		cancelled = s.runCancelledLocked(id)
+		s.unlock()
+		if cancelled {
+			killTestCmd(cmd)
+		}
+		_ = cmd.Wait()
+		if cancelled {
+			break
+		}
 	}
-	// If cancelled mid-scan, ensure the process group is dead before Wait.
-	s.lock()
-	cancelled := s.runCancelledLocked(id)
-	s.unlock()
-	if cancelled {
-		killTestCmd(cmd)
-	}
-	_ = cmd.Wait()
 
 	// Final drain of report (skipped when cancelled — late mismatch must not
 	// re-mark tests after Stop).
 	if !cancelled {
 		time.Sleep(100 * time.Millisecond)
 		s.ingestReportFile(reportPath, id)
+		s.ingestDriveTrace(traceRoot, spec)
 	}
 	shirei.RequestNextFrame()
+}
+
+func (s *AppState) ingestDriveTrace(root string, spec runSpec) {
+	s.lock()
+	defer s.unlock()
+	s.forTargetsLocked(spec, func(t *TestItem) {
+		evs, err := drive.ReadTrace(filepath.Join(root, t.Name, "trace.jsonl"))
+		if err != nil {
+			return
+		}
+		for _, ev := range evs {
+			s.forgetPath(ev.Path)
+		}
+		t.Trace = evs
+	})
 }
 
 func (s *AppState) appendLog(line string) {

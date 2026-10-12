@@ -5,8 +5,9 @@ package main
 // white pill, and iOS 7 blue outline / filled selection).
 
 import (
-	"os"
+	"flag"
 	"fmt"
+	"os"
 
 	"go.hasen.dev/shirei/app"
 
@@ -15,8 +16,10 @@ import (
 )
 
 func main() {
-	if len(os.Args) >= 3 && os.Args[1] == "--png" {
-		if err := RenderToPNG(os.Args[2], 720, 560, root); err != nil {
+	png := flag.String("png", "", "write one settled frame to PATH and exit")
+	flag.Parse()
+	if *png != "" {
+		if err := RenderToPNG(*png, 720, 560, root); err != nil {
 			fmt.Println("render to png failed:", err)
 			os.Exit(1)
 		}
@@ -28,11 +31,11 @@ func main() {
 
 var (
 	defaultView = "list"
-	appleView = "day"
-	appleSize = "m"
-	ios7Kind  = "movie"
-	ios7Filter = "all"
-	actionLog = "pick a segment…"
+	appleView   = "day"
+	appleSize   = "m"
+	ios7Kind    = "movie"
+	ios7Filter  = "all"
+	actionLog   = "pick a segment…"
 )
 
 func root() {
@@ -45,11 +48,11 @@ func root() {
 
 	// --- default ----------------------------------------------------------------
 	section("Default SegmentedControl")
-	if SegmentedControl(&defaultView,
-		Cell("List", "list"),
-		Cell("Grid", "grid"),
-		Cell("Gallery", "gallery"),
-	) {
+	if SegmentedControl(&defaultView, func() {
+		SegmentedCell("List", "list")
+		SegmentedCell("Grid", "grid")
+		SegmentedCell("Gallery", "gallery")
+	}) {
 		note(fmt.Sprintf("default → %s", defaultView))
 	}
 	Label(fmt.Sprintf("value: %s", defaultView), FontSize(12), TextColor(0, 0, 45, 1))
@@ -60,17 +63,17 @@ func root() {
 		FontSize(12), TextColor(0, 0, 45, 1))
 
 	AppleSegmented(&appleView,
-		Cell("Day", "day"),
-		Cell("Week", "week"),
-		Cell("Month", "month"),
-		Cell("Year", "year"),
+		seg("Day", "day"),
+		seg("Week", "week"),
+		seg("Month", "month"),
+		seg("Year", "year"),
 	)
 	Label(fmt.Sprintf("value: %s", appleView), FontSize(12), TextColor(0, 0, 45, 1))
 
 	AppleSegmented(&appleSize,
-		Cell("S", "s"),
-		Cell("M", "m"),
-		Cell("L", "l"),
+		seg("S", "s"),
+		seg("M", "m"),
+		seg("L", "l"),
 	)
 	Label(fmt.Sprintf("size: %s", appleSize), FontSize(12), TextColor(0, 0, 45, 1))
 
@@ -80,16 +83,16 @@ func root() {
 		FontSize(12), TextColor(0, 0, 45, 1))
 
 	IOS7Segmented(&ios7Kind,
-		Cell("Movie", "movie"),
-		Cell("TV Show", "tv"),
-		Cell("Cartoons", "cartoons"),
+		seg("Movie", "movie"),
+		seg("TV Show", "tv"),
+		seg("Cartoons", "cartoons"),
 	)
 	Label(fmt.Sprintf("kind: %s", ios7Kind), FontSize(12), TextColor(0, 0, 45, 1))
 
 	IOS7Segmented(&ios7Filter,
-		Cell("All", "all"),
-		Cell("Unread", "unread"),
-		Cell("Flagged", "flagged"),
+		seg("All", "all"),
+		seg("Unread", "unread"),
+		seg("Flagged", "flagged"),
 	)
 	Label(fmt.Sprintf("filter: %s", ios7Filter), FontSize(12), TextColor(0, 0, 45, 1))
 
@@ -100,6 +103,15 @@ func root() {
 		Label(actionLog, FontSize(14), FontWeight(WeightBold))
 	})
 	ScrollBars()
+}
+
+type segCell[T comparable] struct {
+	Label string
+	Value T
+}
+
+func seg[T comparable](label string, value T) segCell[T] {
+	return segCell[T]{Label: label, Value: value}
 }
 
 func section(title string) {
@@ -119,16 +131,16 @@ func note(s string) {
 // Tuned toward common iOS HIG references: modest corner radius (not a full
 // stadium), a few px of track inset so the white pill has air above/below,
 // and a light drop shadow rather than BoxShadow's default heavy alpha.
-func AppleSegmented[T comparable](target *T, cells ...SegmentedCell[T]) {
+func AppleSegmented[T comparable](target *T, cells ...segCell[T]) {
 	if len(cells) == 0 {
 		return
 	}
 
 	const (
-		height  float32 = 36
-		pad     float32 = 3 // track inset; pill must Float to (pad, pad), not y=0
-		cellW   float32 = 84
-		cellH   float32 = height - pad*2
+		height float32 = 36
+		pad    float32 = 3 // track inset; pill must Float to (pad, pad), not y=0
+		cellW  float32 = 84
+		cellH  float32 = height - pad*2
 		// Modest rounding — reference controls are softly rounded, not capsules.
 		trackR  float32 = 9
 		pillR   float32 = 7
@@ -222,7 +234,7 @@ func AppleSegmented[T comparable](target *T, cells ...SegmentedCell[T]) {
 var ios7Blue = Vec4{211, 100, 50, 1}
 
 // IOS7Segmented is an iOS 7–style segmented control. Demo only.
-func IOS7Segmented[T comparable](target *T, cells ...SegmentedCell[T]) {
+func IOS7Segmented[T comparable](target *T, cells ...segCell[T]) {
 	if len(cells) == 0 {
 		return
 	}

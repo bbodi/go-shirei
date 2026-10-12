@@ -10,6 +10,7 @@ import (
 	"github.com/jezek/xgb/shm"
 	"github.com/jezek/xgb/xproto"
 
+	g "go.hasen.dev/generic"
 	"go.hasen.dev/shirei"
 )
 
@@ -18,10 +19,11 @@ import (
 const glyphCacheBudget = 16 << 20
 
 var (
-	winTitle   string
-	winW       int
-	winH       int
-	frameFn    shirei.FrameFn
+	winTitle string
+	winW     int
+	winH     int
+	winQuiet bool
+	frameFn  shirei.FrameFn
 
 	X      *xgb.Conn
 	screen *xproto.ScreenInfo
@@ -39,7 +41,6 @@ var (
 	windowScale  float32 = 1 // device px per logical point (from Xft.dpi)
 
 	wantsFrame bool // last frame asked to be re-run (animation/async work)
-	quit       bool
 )
 
 // SetupWindow records the window parameters. The window is created in Run.
@@ -49,9 +50,15 @@ func SetupWindow(title string, width, height int) {
 	winH = height
 }
 
-// Run connects to the X server, opens a window, and runs the event loop. It must
-// be called from the program's main goroutine and does not return until the
-// window is closed.
+// SetupQuiet maps the window without asking the WM to take input focus
+// (_NET_WM_USER_TIME = 0). Call before Run.
+func SetupQuiet() {
+	winQuiet = true
+}
+
+// Run connects to the X server, opens a window, and runs the event loop. It
+// must be called from the program's main goroutine and does not return:
+// window close calls generic.ExitWithCleanup so AddExitCleanup handlers run.
 func Run(fn shirei.FrameFn) {
 	runtime.LockOSThread()
 	frameFn = fn
@@ -82,6 +89,11 @@ func Run(fn shirei.FrameFn) {
 	perfLog("[x11] MIT-SHM extension: %v", useShm)
 	defer releaseShm()
 	eventLoop()
+	// os.Exit skips the defers above; close in the same LIFO order.
+	releaseShm()
+	imeClose()
+	X.Close()
+	g.ExitWithCleanup(0)
 }
 
 func createWindow() {
@@ -141,6 +153,13 @@ func createWindow() {
 	}
 	xproto.CreateGC(X, gc, xproto.Drawable(win), 0, nil)
 
+	if winQuiet {
+		if a := internAtom("_NET_WM_USER_TIME"); a != 0 {
+			xproto.ChangeProperty(X, xproto.PropModeReplace, win,
+				a, xproto.AtomCardinal, 32, 1, []byte{0, 0, 0, 0})
+		}
+	}
+
 	xproto.MapWindow(X, win)
 	X.Sync()
 }
@@ -175,7 +194,7 @@ func eventLoop() {
 	defer ticker.Stop()
 
 	dirty := true // produce + present the first frame
-	for !quit {
+	for {
 		// Block until an event arrives or the animation tick fires.
 		select {
 		case ev, ok := <-evCh:
@@ -214,7 +233,7 @@ func eventLoop() {
 			}
 		}
 
-		if dirty && !quit {
+		if dirty {
 			frame()
 			dirty = false
 		}
@@ -237,9 +256,7 @@ func frame() {
 	injectPendingPaste()
 	flushPendingText()
 
-	t0 := time.Now()
 	out := shirei.RunFrameFn(frameFn)
-	perfRecordProduce(time.Since(t0))
 
 	updateIMECursor()
 
@@ -254,10 +271,12 @@ func frame() {
 	}
 
 	ensureBuf()
-	t1 := time.Now()
-	softRenderer.RenderInto(presentBuf, curW*4, curW, curH, scale, out.Surfaces)
+	softRenderer.RenderInto(presentBuf, curW*4, curW, curH, scale, out.Surfaces, out.GlyphRuns)
 	present()
-	perfRecordPaint(time.Since(t1))
+	t := &shirei.ActiveUI().FrameTimings
+	t.Painted = true
+	t.PaintEnd = time.Now()
+	shirei.EmitFrameMetrics()
 
 	wantsFrame = out.NextFrameRequested
 }

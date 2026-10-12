@@ -182,12 +182,27 @@ func (ev *Event) Float32() float32 {
 
 // Array (Event Array) decodes an Array from the Event
 func (ev *Event) Array() []int32 {
-	l := int(ev.Uint32())
-	arr := make([]int32, l/4)
+	b := ev.ArrayBytes()
+	arr := make([]int32, len(b)/4)
 	for i := range arr {
-		arr[i] = ev.Int32()
+		arr[i] = int32(binary.LittleEndian.Uint32(b[i*4:]))
 	}
 	return arr
+}
+
+// ArrayBytes returns the raw payload of a Wayland array (length-prefixed, 32-bit padded).
+func (ev *Event) ArrayBytes() []byte {
+	l := int(ev.Uint32())
+	if l < 0 || ev.off+l > len(ev.Data) {
+		ev.err = ErrUnableToParseUint32
+		return nil
+	}
+	buf := make([]byte, l)
+	copy(buf, ev.next(l))
+	if pad := (4 - (l & 3)) & 3; pad != 0 && ev.off+pad <= len(ev.Data) {
+		ev.next(pad)
+	}
+	return buf
 }
 
 func (ev *Event) next(n int) []byte {

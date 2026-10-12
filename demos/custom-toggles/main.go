@@ -6,8 +6,9 @@ package main
 // "checkmark in the knob" variety. Default ToggleSwitch sits above for comparison.
 
 import (
-	"os"
+	"flag"
 	"fmt"
+	"os"
 
 	"go.hasen.dev/shirei/app"
 
@@ -16,8 +17,10 @@ import (
 )
 
 func main() {
-	if len(os.Args) >= 3 && os.Args[1] == "--png" {
-		if err := RenderToPNG(os.Args[2], 640, 700, root); err != nil {
+	png := flag.String("png", "", "write one settled frame to PATH and exit")
+	flag.Parse()
+	if *png != "" {
+		if err := RenderToPNG(*png, 640, 700, root); err != nil {
 			fmt.Println("render to png failed:", err)
 			os.Exit(1)
 		}
@@ -201,10 +204,10 @@ var greenOn = Vec4{134, 55, 48, 1} // ~#4CAF50-ish
 // GreenToggle is a green iOS-like switch. Demo only.
 func GreenToggle(on *bool) {
 	const (
-		h      float32 = 30
-		w      float32 = 52
-		pad    float32 = 2
-		knob   float32 = h - pad*2
+		h    float32 = 30
+		w    float32 = 52
+		pad  float32 = 2
+		knob float32 = h - pad*2
 	)
 
 	Container(Attrs(FixSize(w, h), Corners(h/2)), func() {

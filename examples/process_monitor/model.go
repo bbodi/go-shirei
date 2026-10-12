@@ -8,6 +8,9 @@ import "go.hasen.dev/procinfo"
 // MetricsUnknown); it sorts below every real reading and renders as "--".
 const CPUPercentUnknown float64 = -1
 
+// PowerWattsUnknown marks a ProcInfo with no energy reading to diff.
+const PowerWattsUnknown float64 = -1
+
 // Aliases so the rest of process_monitor keeps its existing names while the
 // OS collectors live in procinfo.
 type (
@@ -18,16 +21,24 @@ type (
 
 func Collect() (RawSnapshot, error) { return procinfo.Collect() }
 
+func Kill(pid int) error { return procinfo.Kill(pid) }
+
+func ReadDetails(pid int) (procinfo.Details, error) { return procinfo.ReadDetails(pid) }
+
+func IconPNG(pid int, exePath string) []byte { return procinfo.IconPNG(pid, exePath) }
+
 type ProcInfo struct {
 	PID        int
 	PPID       int
 	Name       string
+	ExePath    string
 	Cmdline    string
 	User       string
 	State      string
 	RSSBytes   uint64
 	MemPercent float64
 	CPUPercent float64
+	PowerWatts float64
 	StartTime  time.Time
 	Threads    int
 
@@ -39,4 +50,5 @@ type ProcSnapshot struct {
 	Processes        []ProcInfo
 	TotalMemoryBytes uint64
 	UsedMemoryBytes  uint64
+	HostCPUPercent   float64
 }

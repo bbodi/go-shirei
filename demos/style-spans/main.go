@@ -6,6 +6,7 @@ package main
 //	go run ./demos/style-spans --png out.png
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
@@ -18,8 +19,10 @@ import (
 const winW, winH = 960, 800
 
 func main() {
-	if len(os.Args) >= 3 && os.Args[1] == "--png" {
-		if err := RenderToPNG(os.Args[2], winW, winH, frameFn); err != nil {
+	png := flag.String("png", "", "write one settled frame to PATH and exit")
+	flag.Parse()
+	if *png != "" {
+		if err := RenderToPNG(*png, winW, winH, frameFn); err != nil {
 			fmt.Fprintln(os.Stderr, "render to png failed:", err)
 			os.Exit(1)
 		}
@@ -49,7 +52,7 @@ func frameFn() {
 			FontSize(16), TextColor(0, 0, 45, 1))
 
 		// Wrap at the viewport content width (settles after the first pass).
-		rowW := GetAvailableSize()[0]
+		rowW := GetContentWidth()
 		Container(Attrs(Row, Wrap, Gap(20), MaxWidth(rowW)), func() {
 
 			// Color

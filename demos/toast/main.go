@@ -7,6 +7,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"time"
@@ -20,7 +21,9 @@ import (
 const winW, winH = 640, 420
 
 func main() {
-	if len(os.Args) >= 3 && os.Args[1] == "--png" {
+	png := flag.String("png", "", "write one settled frame to PATH and exit")
+	flag.Parse()
+	if *png != "" {
 		ToastExt(ToastAttrs{
 			Title:      "Saved",
 			Body:       "Could not open /Users/demo/Projects/old-repo — not a git repository",
@@ -28,7 +31,7 @@ func main() {
 			Background: ToastBackgroundSuccess,
 			Duration:   30 * time.Second, // keep visible for the still
 		})
-		if err := RenderToPNG(os.Args[2], winW, winH, RootView); err != nil {
+		if err := RenderToPNG(*png, winW, winH, RootView); err != nil {
 			fmt.Fprintln(os.Stderr, "render to png failed:", err)
 			os.Exit(1)
 		}

@@ -20,19 +20,29 @@ import (
 //
 // Code that frees or prunes entries affects the whole process — do not prune
 // from a throwaway measure path in a way that drops live-app assets.
+
+const shapeCacheCap = 4096
+
 type Resources struct {
 	// Fonts
 	faces   []FontFace // index 0 is nil-like
 	faceMap map[FaceLookupKey]FontId
 	// fontLookupEpoch bumps when the face registry gains faces that can
-	// change fallback shaping (end of background system scan). Folded into
-	// the shape-cache key so stale fallback shapes miss without clearing the LRU.
+	// change LookupFace or FallbackFontFor (UseFontFiles, UseFontBytes,
+	// end of background system scan). The frame/measure thread drops the
+	// shape LRUs when it observes a new epoch (syncShapeCachesToEpoch).
+	// The key does not include epoch. Named-family 0→id is this epoch,
+	// not hashed FontIds — the unwrapped key hashes intern ids.
 	fontLookupEpoch uint64
 
-	// Text shaping
-	hbfonts    map[FontId]*harfbuzz.Font
-	shapeCache *lru.Cache[uint64, ShapedText]
-	bidiCache  *lru.Cache[string, []Direction]
+	// Text shaping. unwrappedCache is HarfBuzz output (no wrap width).
+	// shapeCache is wrapped lines keyed by unwrapped key + quantized width.
+	// shapeCacheEpoch is the fontLookupEpoch those LRUs were built for.
+	hbfonts           map[FontId]*harfbuzz.Font
+	unwrappedCache    *lru.Cache[uint64, unwrappedShaped]
+	shapeCache        *lru.Cache[uint64, ShapedText]
+	shapeCacheEpoch   uint64
+	coloredGlyphCache *lru.Cache[coloredGlyphKey, *GlyphRunData]
 
 	// CachedMeasure results (hash(key)+maxSize+host salts → size)
 	measureCache *lru.Cache[uint64, Vec2]
@@ -45,6 +55,7 @@ type Resources struct {
 	glyphMap         map[GlyphKey]*list.Element
 	glyphList        *list.List // front = most recently used
 	glyphBytes       int
+	glyphUpdate      uint64 // Shared cache-update generation, independent of UI frame counters.
 	glyphsAddedBuf   []GlyphKey
 	glyphsEvictedBuf []GlyphKey
 
@@ -84,8 +95,9 @@ func NewResources() *Resources {
 		faces:               make([]FontFace, 1),
 		faceMap:             make(map[FaceLookupKey]FontId),
 		hbfonts:             make(map[FontId]*harfbuzz.Font),
-		shapeCache:          lru.New[uint64, ShapedText](lru.WithCapacity(4096)),
-		bidiCache:           lru.New[string, []Direction](),
+		unwrappedCache:      lru.New[uint64, unwrappedShaped](lru.WithCapacity(shapeCacheCap)),
+		shapeCache:          lru.New[uint64, ShapedText](lru.WithCapacity(shapeCacheCap)),
+		coloredGlyphCache:   lru.New[coloredGlyphKey, *GlyphRunData](lru.WithCapacity(shapeCacheCap)),
 		measureCache:        lru.New[uint64, Vec2](lru.WithCapacity(8192)),
 		glyphOutlineMemo:    make(map[glyphOutlineKey]font.GlyphOutline),
 		glyphMap:            make(map[GlyphKey]*list.Element),
@@ -116,6 +128,21 @@ func NewResources() *Resources {
 		go r.watchFiles()
 	}
 	return r
+}
+
+// syncShapeCachesToEpoch drops the unwrapped and wrap LRUs when the face
+// registry epoch has advanced. Called from the frame/measure thread on the
+// way into shaping — never from the background scan, which only bumps the
+// counter. The shape key does not include epoch.
+func (r *Resources) syncShapeCachesToEpoch() {
+	epoch := fontLookupEpoch()
+	if r.shapeCacheEpoch == epoch {
+		return
+	}
+	r.unwrappedCache = lru.New[uint64, unwrappedShaped](lru.WithCapacity(shapeCacheCap))
+	r.shapeCache = lru.New[uint64, ShapedText](lru.WithCapacity(shapeCacheCap))
+	r.coloredGlyphCache = lru.New[coloredGlyphKey, *GlyphRunData](lru.WithCapacity(shapeCacheCap))
+	r.shapeCacheEpoch = epoch
 }
 
 func (r *Resources) watchDirEntries() {

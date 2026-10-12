@@ -44,7 +44,7 @@ const usageText = `ferry — a two-pane sftp gui
 
 usage:
   ferry [-F <config>]                  open the gui (default config: ~/.ssh/config)
-  ferry --png <out.png>                render one frame headlessly and exit
+  ferry -png <out.png>                 render one frame headlessly and exit
   ferry hosts                          list hosts from the ssh config
   ferry ls <host>[:path]               list a remote directory (default: home)
   ferry head <host>:<path>             print the first 4KB of a remote file
@@ -61,14 +61,6 @@ common flags:
 `
 
 func main() {
-	if len(os.Args) >= 3 && os.Args[1] == "--png" {
-		if err := RenderPNG(os.Args[2]); err != nil {
-			fmt.Fprintln(os.Stderr, "render failed:", err)
-			os.Exit(1)
-		}
-		return
-	}
-
 	// A known subcommand runs the CLI; anything else — no args, or leading
 	// flags like `ferry -F <config>` — opens the GUI.
 	if len(os.Args) >= 2 && !strings.HasPrefix(os.Args[1], "-") {
@@ -97,10 +89,17 @@ func main() {
 		return
 	}
 
-	fs := flag.NewFlagSet("ferry", flag.ExitOnError)
-	fs.Usage = func() { fmt.Print(usageText) }
-	cfg := fs.String("F", "", "ssh config path (default: ~/.ssh/config)")
-	fs.Parse(os.Args[1:]) // handles -h/--help via fs.Usage
+	png := flag.String("png", "", "write one frame to PATH and exit")
+	cfg := flag.String("F", "", "ssh config path (default: ~/.ssh/config)")
+	flag.Usage = func() { fmt.Print(usageText) }
+	flag.Parse()
+	if *png != "" {
+		if err := RenderPNG(*png); err != nil {
+			fmt.Fprintln(os.Stderr, "render failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	configPathOverride = *cfg
 	RunGUI()
 }

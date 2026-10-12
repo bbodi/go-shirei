@@ -1,0 +1,4 @@
+d=0 orig=0,0 size=240,160 screen=0,0,240,160 content=40,70 scroll=0,0 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0
+d=1 orig=0,0 size=40,70 screen=0,0,40,70 content=40,70 scroll=0,0 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0
+d=2 orig=0,0 size=40,50 screen=0,0,40,50 content=0,0 scroll=0,0 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0
+d=2 orig=0,50 size=20,20 screen=0,50,20,20 content=0,0 scroll=0,0 pad=0,0,0,0 corners=0,0,0,0 border=0 alpha=0

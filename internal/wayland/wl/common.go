@@ -62,3 +62,12 @@ func (p *BaseProxy) Unregister() {
 		p.ctx.Unregister(p.id)
 	}
 }
+
+// BufferFromEventId registers a wl_buffer whose object id was allocated by
+// the compositor (linux-dmabuf "created" event).
+func BufferFromEventId(ctx *Context, id uint32) *Buffer {
+	ret := new(Buffer)
+	ret.initBuffer()
+	ctx.RegisterMapped(ret, id)
+	return ret
+}

@@ -116,12 +116,12 @@ func TestViewToggleResetsTableSort(t *testing.T) {
 	cols := []TableColumn[*semRow]{
 		{
 			Label:  "Name",
-			Render: func(r *semRow) { rowIds[r] = shirei.CurrentId(); Label(r.Name) },
+			Cell: func(r *semRow) { rowIds[r] = shirei.CurrentId(); Label(r.Name) },
 			Less:   func(a, b *semRow) bool { return a.Name < b.Name },
 		},
 		{
 			Label: "Val", Width: 80, DefaultDesc: true,
-			Render: func(r *semRow) { Label("v") },
+			Cell: func(r *semRow) { Label("v") },
 			Less:   func(a, b *semRow) bool { return a.Val < b.Val },
 		},
 	}

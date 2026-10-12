@@ -18,7 +18,11 @@ func TestSegmentedControlClick(t *testing.T) {
 	mode := "a"
 	var changes int
 	view := func() {
-		if SegmentedControl(&mode, Cell("A", "a"), Cell("B", "b"), Cell("C", "c")) {
+		if SegmentedControl(&mode, func() {
+			SegmentedCell("A", "a")
+			SegmentedCell("B", "b")
+			SegmentedCell("C", "c")
+		}) {
 			changes++
 		}
 	}

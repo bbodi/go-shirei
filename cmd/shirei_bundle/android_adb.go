@@ -139,7 +139,7 @@ func installAndroidAPK(apkPath, packageID, serial string, logf func(string, ...a
 		return err
 	}
 	logf("— adb install -r %s", apkPath)
-	cmd := adbCmd(adb, serial, "install", "-r", apkPath)
+	cmd := adbCmd(adb, serial, "install", "-r", "--no-incremental", apkPath)
 	out, err := cmd.CombinedOutput()
 	if len(out) > 0 {
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {

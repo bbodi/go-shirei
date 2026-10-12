@@ -8,6 +8,8 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -74,7 +76,12 @@ func main() {
 		}
 	}
 
-	f, err := os.Create(os.Args[1])
+	flag.Parse()
+	if flag.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: go run gen_icon.go icon.png")
+		os.Exit(2)
+	}
+	f, err := os.Create(flag.Arg(0))
 	if err != nil {
 		panic(err)
 	}

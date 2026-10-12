@@ -4,8 +4,7 @@ import (
 	_ "embed"
 )
 
-// Dock icon: commit timeline + green/red diff bars. Generated with Imagine;
-// embedded so `go run` works from any directory.
+// Dock icon (commit graph + diff). Embedded so `go run` works from any directory.
 //
 //go:embed icon.png
 var iconPNG []byte

@@ -74,7 +74,7 @@ func TestFallbackMemoStoresMiss(t *testing.T) {
 	}
 	key := fallbackMemoKey{miss, DefaultFontAspect()}
 	fallbackMemoMu.Lock()
-	hit, ok := fallbackMemo[key]
+	hit, ok := fallbackMemo.Get(key)
 	fallbackMemoMu.Unlock()
 	if !ok {
 		t.Fatal("expected miss to be memoized")

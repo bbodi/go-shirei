@@ -56,16 +56,16 @@ func startTabWatch(t *RepoTab) {
 	})
 }
 
-// stopTabWatch tears down the watcher (idempotent).
+// stopTabWatch tears down the watcher (idempotent). Call from the frame
+// goroutine (closeTab in TabBar already holds the frame lock) or from tests
+// with no concurrent frame. Do not WithFrameLock here: a nested acquire
+// from inside RunFrameFn deadlocks.
 func stopTabWatch(t *RepoTab) {
 	if t == nil {
 		return
 	}
-	var w *repoWatch
-	WithFrameLock(func() {
-		w = t.watch
-		t.watch = nil
-	})
+	w := t.watch
+	t.watch = nil
 	if w != nil {
 		w.close()
 	}

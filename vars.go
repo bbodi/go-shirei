@@ -4,16 +4,18 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
-	"strings"
+
+	g "go.hasen.dev/generic"
 )
 
-var DEBUG_ENV = envTruthy("DEBUG")
+var DEBUG_ENV = g.EnvTruthy("DEBUG")
 
-func envTruthy(key string) bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
-	return v == "1" || v == "true" || v == "yes" || v == "on"
-}
+// PROFILE_ENV enables the in-app CPU profiler panel (widgets.ProfileButton).
+// Independent of DEBUG so a profile is not mixed with DebugPanel labels.
+var PROFILE_ENV = g.EnvTruthy("SHIREI_PPROF")
+
+// FPS_ENV enables the in-app frame-time panel (widgets.FPSCounter).
+var FPS_ENV = g.EnvTruthy("FPS_COUNTER")
 
 type _DebugPanel struct {
 	messages    []string
@@ -65,9 +67,11 @@ func DebugMessage(msg string) {
 }
 
 // DebugVar adds a "name: value" line to the debug overlay, formatting value as
-// compact JSON.
+// compact JSON. Formatting is skipped when the overlay isn't accepting messages.
 func DebugVar(name string, value any) {
-	// TODO: handle structs or other nested objects!!
+	if !DEBUG_ENV || ActiveUI().FrameNumber > _panel.frameNumber+1 {
+		return
+	}
 	DebugMessage(fmt.Sprintf("%s: %v", name, compactJson(value)))
 }
 

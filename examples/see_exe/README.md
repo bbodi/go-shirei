@@ -20,7 +20,7 @@ Data comes only from the binary and the standard library
 required on the machine doing the inspection. Rebuilds are picked up via
 `fsnotify` while the window stays open.
 
-CLI extras: `--text` for a terminal report; a second argument for a module
+CLI extras: `-text` for a terminal report; a second argument for a module
 “why” query without the GUI. PE (Windows) binaries may appear in the picker but
 full size attribution is not there yet.
 
@@ -86,7 +86,7 @@ frame (`gui.go`).
 ```shell
 go run .                         # picker; inside examples/see_exe
 go run . /path/to/binary
-go run . /path/to/binary --text
+go run . -text /path/to/binary
 go run . /path/to/binary some.module/path
-go run . --png out.png
+go run . -png out.png
 ```

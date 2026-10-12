@@ -1,8 +1,9 @@
 package widgets
 
 import (
+	"cmp"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -102,11 +103,11 @@ func fuzzyRankPaths(query string, paths []string, display func(string) string) [
 		}
 		hits = append(hits, hit{p, s, i})
 	}
-	sort.SliceStable(hits, func(i, j int) bool {
-		if hits[i].score != hits[j].score {
-			return hits[i].score > hits[j].score
+	slices.SortStableFunc(hits, func(a, b hit) int {
+		if c := cmp.Compare(b.score, a.score); c != 0 {
+			return c
 		}
-		return hits[i].idx < hits[j].idx
+		return cmp.Compare(a.idx, b.idx)
 	})
 	out := make([]string, len(hits))
 	for i, h := range hits {

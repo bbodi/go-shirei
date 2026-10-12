@@ -28,7 +28,7 @@ const imageWipeDefaultOutline = 6
 //
 // At OutSlider 0 the view is all RightImage; at 1 it is all LeftImage.
 // Empty LeftLabel / RightLabel omit the corner tags. Zero accent colors use
-// ImageWipeLeftAccent / ImageWipeRightAccent. OutlineThickness 0 means the
+// the current scheme. OutlineThickness 0 means the
 // default (6); pass a negative value for no outline.
 //
 // Diff highlight (optional): a full-frame overlay of pixels that differ between
@@ -54,7 +54,7 @@ type ImageWipeAttrs struct {
 
 	// MaxSize is an optional max box for the wipe plane (same rule as ImageView:
 	// never enlarge). Displayed size is RestrictedSize of the image content
-	// into this box. Zero width → GetAvailableSize().x (caller should pass a
+	// into this box. Zero width → GetContentWidth() (caller should pass a
 	// real pane width from an Extrinsic parent). Zero height → no height cap.
 	// If neither image has dimensions yet, a small placeholder is used.
 	//
@@ -66,6 +66,20 @@ type ImageWipeAttrs struct {
 // ImageWipe draws a before/after wipe compare with a draggable vertical split.
 // Drag anywhere on the image (or the center knob) to set *OutSlider.
 func ImageWipe(attrs ImageWipeAttrs) {
+	style := CurrentColorScheme.ImageWipe
+	if attrs.LeftAccentColor != (Vec4{}) {
+		style.Left = attrs.LeftAccentColor
+		style.LeftText = ContrastingTextColor(style.Left)
+	}
+	if attrs.RightAccentColor != (Vec4{}) {
+		style.Right = attrs.RightAccentColor
+		style.RightText = ContrastingTextColor(style.Right)
+	}
+	ImageWipeStyled(attrs, style)
+}
+
+// ImageWipeStyled uses literal chrome colors; accent overrides in attrs are ignored.
+func ImageWipeStyled(attrs ImageWipeAttrs, style ImageWipeStyle) {
 	if attrs.OutSlider == nil {
 		return
 	}
@@ -73,8 +87,8 @@ func ImageWipe(attrs ImageWipeAttrs) {
 	generic.Clamp(0, &t, 1)
 	*attrs.OutSlider = t
 
-	leftAccent := AccentOrFallback(attrs.LeftAccentColor, ImageWipeLeftAccent)
-	rightAccent := AccentOrFallback(attrs.RightAccentColor, ImageWipeRightAccent)
+	leftAccent := style.Left
+	rightAccent := style.Right
 
 	outline := attrs.OutlineThickness
 	if outline == 0 {
@@ -87,8 +101,8 @@ func ImageWipe(attrs ImageWipeAttrs) {
 	// Base = image pixels. Cap = MaxSize (width-only when MaxSize.y == 0).
 	maxW, maxH := attrs.MaxSize[0], attrs.MaxSize[1]
 	if maxW < 1 {
-		if avail := GetAvailableSize(); avail[0] > 1 {
-			maxW = avail[0]
+		if w := GetContentWidth(); w > 1 {
+			maxW = w
 		}
 	}
 	if maxW < 1 {
@@ -105,7 +119,7 @@ func ImageWipe(attrs ImageWipeAttrs) {
 
 	Container(Attrs(
 		FixSize(viewW, viewH), Clip, Focusable, NoAnimate,
-		Background(0, 0, 88, 1),
+		BackgroundVec(style.Background),
 	), func() {
 		// Whole surface is the hit target (same idea as ProcessSlider).
 		PressAction()
@@ -178,27 +192,27 @@ func ImageWipe(attrs ImageWipeAttrs) {
 		Element(Attrs(
 			Float(splitX-gripW/2, 0), FixSize(gripW, viewH),
 			ClickThrough, NoAnimate,
-			Background(0, 0, 0, 0.06),
+			BackgroundVec(style.DividerShadow),
 		))
 		Element(Attrs(
 			Float(barX, 0), FixSize(barW, viewH),
 			ClickThrough, NoAnimate,
-			Background(0, 0, 100, 1),
-			BorderWidth(1), BorderColor(0, 0, 20, 0.55),
+			BackgroundVec(style.Divider),
+			BorderWidth(1), BorderColorVec(style.DividerBorder),
 		))
 		const knob float32 = 36
 		knobY := (viewH - knob) / 2
 		Container(Attrs(
 			Float(splitX-knob/2, knobY), FixSize(knob, knob),
 			Corners(knob/2), ClickThrough, NoAnimate, Center,
-			Background(0, 0, 100, 1),
-			BorderWidth(1), BorderColor(0, 0, 30, 0.5),
+			BackgroundVec(style.Handle),
+			BorderWidth(1), BorderColorVec(style.HandleBorder),
 			BoxShadow(1),
 		), func() {
 			Element(Attrs(Float(knob*0.35, knob*0.28), FixSize(2, knob*0.44),
-				Background(0, 0, 35, 1), ClickThrough, NoAnimate))
+				BackgroundVec(style.Grip), ClickThrough, NoAnimate))
 			Element(Attrs(Float(knob*0.58, knob*0.28), FixSize(2, knob*0.44),
-				Background(0, 0, 35, 1), ClickThrough, NoAnimate))
+				BackgroundVec(style.Grip), ClickThrough, NoAnimate))
 		})
 
 		// Split-colored outline: left of the wipe uses left accent, right uses right.
@@ -212,11 +226,11 @@ func ImageWipe(attrs ImageWipeAttrs) {
 			pad = 8
 		}
 		if attrs.LeftLabel != "" {
-			imageWipeTag(attrs.LeftLabel, pad, pad, leftAccent)
+			imageWipeTag(attrs.LeftLabel, pad, pad, leftAccent, style.LeftText)
 		}
 		if attrs.RightLabel != "" {
 			// Approximate right-edge placement; tag sizes itself to text.
-			imageWipeTagRight(attrs.RightLabel, viewW, pad, rightAccent)
+			imageWipeTagRight(attrs.RightLabel, viewW, pad, rightAccent, style.RightText)
 		}
 	})
 }
@@ -357,12 +371,8 @@ func imageWipeOutline(w, h, splitX, th float32, left, right Vec4) {
 	}
 }
 
-func imageWipeTag(text string, x, y float32, accent Vec4) {
+func imageWipeTag(text string, x, y float32, accent, fg Vec4) {
 	bg := accent
-	if bg[3] > 0.9 {
-		bg[3] = 0.88
-	}
-	fg := ContrastingTextColor(accent)
 	Container(Attrs(
 		Float(x, y), Pad2(4, 6), Corners(4), ClickThrough, NoAnimate,
 		BackgroundVec(bg),
@@ -376,12 +386,12 @@ func imageWipeTag(text string, x, y float32, accent Vec4) {
 // x from the right by building the tag and accepting a slight overshoot when
 // the label is very long (caller can shorten). For simplicity we float from
 // the right via negative... Shirei Float is top-left based, so estimate width.
-func imageWipeTagRight(text string, viewW, pad float32, accent Vec4) {
+func imageWipeTagRight(text string, viewW, pad float32, accent, fg Vec4) {
 	// Rough width from rune count; good enough for short corner tags.
 	est := float32(len(text))*7 + 16
 	x := viewW - pad - est
 	if x < pad {
 		x = pad
 	}
-	imageWipeTag(text, x, pad, accent)
+	imageWipeTag(text, x, pad, accent, fg)
 }

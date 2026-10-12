@@ -8,6 +8,8 @@ func criticalFontPaths() []string {
 		"/system/fonts/Roboto-Regular.ttf",
 		"/system/fonts/Roboto-Bold.ttf",
 		"/system/fonts/Roboto-Italic.ttf",
+		"/system/fonts/DroidSans.ttf",
+		"/system/fonts/DroidSans-Bold.ttf",
 		"/system/fonts/DroidSansMono.ttf",
 		"/system/fonts/NotoSansCJK-Regular.ttc",
 		"/system/fonts/NotoSerifCJK-Regular.ttc",

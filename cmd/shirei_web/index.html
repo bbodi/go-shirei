@@ -6,8 +6,11 @@
   <title>{{.Title}}</title>
   <style>
     html, body { margin: 0; height: 100%; }
-    /* Shell size is applied by jsbackend from SetupWindow (fixed px or full viewport). */
+    body { display: flex; flex-direction: column; }
+    /* Host fills leftover page space (siblings such as a source strip keep theirs). */
     #shirei-root {
+      flex: 1;
+      min-height: 0;
       position: relative;
       overflow: hidden;
       background: #fff;
@@ -25,22 +28,15 @@
       color: #888; pointer-events: none;
     }
     {{- if .HasChrome}}
-    /* Page chrome (gallery demos): floats over the desk, does not resize the wasm shell. */
     #shirei-page {
-      position: fixed;
-      left: 0; right: 0; top: 0;
-      z-index: 20;
+      flex: 0 0 auto;
       padding: 8px 14px;
       font: 12px/1.4 system-ui, -apple-system, sans-serif;
       color: #444;
       background: rgba(255, 255, 255, 0.92);
       border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      pointer-events: none;
     }
     #shirei-page a {
-      pointer-events: auto;
       color: #1a5fb4;
       text-decoration: none;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

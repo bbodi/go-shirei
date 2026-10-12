@@ -10,6 +10,26 @@ import (
 // streak; breaking either resets to 1. Test frames run back to back (well
 // inside the interval), so time-expiry is exercised by shrinking the
 // tunable rather than sleeping.
+// TestInputRequestsFollowUp: a pass that saw pointer/key/text/wheel/touch
+// asks for exactly one more produce, then idles.
+func TestInputRequestsFollowUp(t *testing.T) {
+	ResetInputSession()
+	ui.Host.WindowSize = Vec2{400, 300}
+	empty := func() { RunFrameFn(func() {}) }
+	for i := 0; i < 3; i++ {
+		empty()
+	}
+	ui.Host.FrameInput.Mouse = MouseClick
+	out := RunFrameFn(func() {})
+	if !out.NextFrameRequested {
+		t.Fatal("input frame must request one follow-up produce")
+	}
+	out = RunFrameFn(func() {})
+	if out.NextFrameRequested {
+		t.Fatal("follow-up with no input must idle")
+	}
+}
+
 func TestClickStreakDetection(t *testing.T) {
 	ResetInputSession()
 	ui.Host.WindowSize = Vec2{400, 300}

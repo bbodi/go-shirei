@@ -21,6 +21,7 @@ func computeSnapshot(prev, curr *RawSnapshot) *ProcSnapshot {
 		Time:             curr.Time,
 		TotalMemoryBytes: curr.TotalMemoryBytes,
 		UsedMemoryBytes:  curr.UsedMemoryBytes,
+		HostCPUPercent:   hostCPUPercent(prev, curr),
 		Processes:        make([]ProcInfo, 0, len(curr.Processes)),
 	}
 
@@ -41,6 +42,7 @@ func computeSnapshot(prev, curr *RawSnapshot) *ProcSnapshot {
 			PID:            raw.PID,
 			PPID:           raw.PPID,
 			Name:           raw.Name,
+			ExePath:        raw.ExePath,
 			Cmdline:        cmdlineOf(raw),
 			User:           raw.User,
 			State:          raw.State,
@@ -52,6 +54,7 @@ func computeSnapshot(prev, curr *RawSnapshot) *ProcSnapshot {
 		if curr.TotalMemoryBytes > 0 {
 			p.MemPercent = float64(raw.RSSBytes) / float64(curr.TotalMemoryBytes) * 100
 		}
+		p.PowerWatts = PowerWattsUnknown
 		if raw.MetricsUnknown {
 			p.CPUPercent = CPUPercentUnknown
 		} else if prevRaw, ok := prevByPID[raw.PID]; ok && !prevRaw.MetricsUnknown {
@@ -69,11 +72,73 @@ func computeSnapshot(prev, curr *RawSnapshot) *ProcSnapshot {
 				if cpuDelta > 0 && procWall > 0 {
 					p.CPUPercent = float64(cpuDelta) / float64(procWall) * 100
 				}
+				if !raw.EnergyUnknown && !prevRaw.EnergyUnknown && raw.EnergyNanoJoules >= prevRaw.EnergyNanoJoules {
+					p.PowerWatts = wattsFromNano(raw.EnergyNanoJoules-prevRaw.EnergyNanoJoules, procWall)
+				}
 			}
 		}
 		out.Processes = append(out.Processes, p)
 	}
+
+	// Linux: no per-pid energy. Attribute package RAPL by this pid's share
+	// of CPU time over the same window.
+	if prev != nil && !curr.HostEnergyUnknown && !prev.HostEnergyUnknown &&
+		curr.HostEnergyNanoJoules >= prev.HostEnergyNanoJoules {
+		pkgDelta := curr.HostEnergyNanoJoules - prev.HostEnergyNanoJoules
+		var cpuAll time.Duration
+		for _, raw := range curr.Processes {
+			if prevRaw, ok := prevByPID[raw.PID]; ok && !raw.MetricsUnknown && !prevRaw.MetricsUnknown {
+				if d := raw.CPUTime - prevRaw.CPUTime; d > 0 {
+					cpuAll += d
+				}
+			}
+		}
+		if pkgDelta > 0 && cpuAll > 0 {
+			wall := curr.Time.Sub(prev.Time)
+			for i := range out.Processes {
+				p := &out.Processes[i]
+				if p.PowerWatts >= 0 {
+					continue // already have a real per-pid counter
+				}
+				raw := curr.Processes[i]
+				prevRaw, ok := prevByPID[raw.PID]
+				if !ok || raw.MetricsUnknown || prevRaw.MetricsUnknown {
+					continue
+				}
+				cpuDelta := raw.CPUTime - prevRaw.CPUTime
+				if cpuDelta <= 0 {
+					p.PowerWatts = 0
+					continue
+				}
+				share := uint64(float64(pkgDelta) * float64(cpuDelta) / float64(cpuAll))
+				p.PowerWatts = wattsFromNano(share, wall)
+			}
+		}
+	}
 	return out
+}
+
+func wattsFromNano(nanoJoules uint64, wall time.Duration) float64 {
+	if wall <= 0 {
+		return 0
+	}
+	return float64(nanoJoules) / 1e9 / wall.Seconds()
+}
+
+func hostCPUPercent(prev, curr *RawSnapshot) float64 {
+	if prev == nil || curr == nil {
+		return 0
+	}
+	dt := curr.HostCPU.Total() - prev.HostCPU.Total()
+	if dt == 0 {
+		return 0
+	}
+	idle := (curr.HostCPU.Idle + curr.HostCPU.IOWait) - (prev.HostCPU.Idle + prev.HostCPU.IOWait)
+	busy := dt - idle
+	if busy > dt {
+		busy = dt
+	}
+	return float64(busy) / float64(dt) * 100
 }
 
 func CollectSampleWindow(samples int, period time.Duration) (*ProcSnapshot, time.Duration, error) {

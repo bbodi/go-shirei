@@ -312,26 +312,21 @@ if [[ ! -f "$HEADER" ]]; then
 	fi
 fi
 
-# install_app_icon SRC_IMAGE APP_DIR PLATFORM
-# Builds a minimal AppIcon asset catalog via actool and merges icon keys into
-# Info.plist. PLATFORM is iphoneos or iphonesimulator. No-op if SRC empty.
-install_app_icon() {
-	local src="$1" app_dir="$2" platform="$3"
-	[[ -n "$src" && -f "$src" ]] || return 0
-	command -v sips >/dev/null || { log "warning: sips not found; skipping icon"; return 0; }
-	command -v xcrun >/dev/null || return 0
-
-	local asset_root="$BUILD_DIR/AppIcon.xcassets"
+# write_appicon_catalog ASSET_ROOT [SRC_IMAGE]
+# Writes Assets.xcassets/AppIcon.appiconset (1024×1024 universal iOS).
+# DeviceHost.xcodeproj sets ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon, so
+# xcodebuild fails if this catalog is missing. SRC_IMAGE is optional: when
+# unset or unreadable, a solid placeholder is written instead.
+write_appicon_catalog() {
+	local asset_root="$1"
+	local src="${2:-}"
 	local iconset="$asset_root/AppIcon.appiconset"
-	rm -rf "$asset_root"
 	mkdir -p "$iconset"
-
-	# Single 1024×1024 universal iOS icon (Xcode 14+ style).
-	local icon_png="$iconset/Icon.png"
-	if ! sips -s format png -z 1024 1024 "$src" --out "$icon_png" >/dev/null 2>&1; then
-		log "warning: could not convert icon $src (need PNG/JPEG); skipping"
-		return 0
-	fi
+	cat >"$asset_root/Contents.json" <<'JSON'
+{
+  "info" : { "author" : "shirei-ios-run", "version" : 1 }
+}
+JSON
 	cat >"$iconset/Contents.json" <<'JSON'
 {
   "images" : [
@@ -345,6 +340,37 @@ install_app_icon() {
   "info" : { "author" : "shirei-ios-run", "version" : 1 }
 }
 JSON
+	local icon_png="$iconset/Icon.png"
+	if [[ -n "$src" && -f "$src" ]] && command -v sips >/dev/null; then
+		if sips -s format png -z 1024 1024 "$src" --out "$icon_png" >/dev/null 2>&1; then
+			return 0
+		fi
+		log "warning: could not convert icon $src (need PNG/JPEG); using placeholder AppIcon"
+	fi
+	# Opaque 1×1 RGB PNG, then upscale. actool requires a real AppIcon file.
+	printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mOoktcDAAHeAMjP5/eJAAAAAElFTkSuQmCC' | base64 -d >"$icon_png"
+	if command -v sips >/dev/null; then
+		sips -z 1024 1024 "$icon_png" >/dev/null 2>&1 || true
+	fi
+}
+
+# install_app_icon SRC_IMAGE APP_DIR PLATFORM
+# Builds a minimal AppIcon asset catalog via actool and merges icon keys into
+# Info.plist. PLATFORM is iphoneos or iphonesimulator. No-op if SRC empty.
+# Used on the Simulator path (hand-linked .app, no xcodebuild).
+install_app_icon() {
+	local src="$1" app_dir="$2" platform="$3"
+	[[ -n "$src" && -f "$src" ]] || return 0
+	command -v sips >/dev/null || { log "warning: sips not found; skipping icon"; return 0; }
+	command -v xcrun >/dev/null || return 0
+
+	local asset_root="$BUILD_DIR/AppIcon.xcassets"
+	rm -rf "$asset_root"
+	write_appicon_catalog "$asset_root" "$src"
+	if [[ ! -f "$asset_root/AppIcon.appiconset/Icon.png" ]]; then
+		log "warning: could not convert icon $src (need PNG/JPEG); skipping"
+		return 0
+	fi
 
 	local partial="$BUILD_DIR/icon-partial.plist"
 	rm -f "$partial"
@@ -421,6 +447,7 @@ if [[ "$TARGET" == "sim" ]]; then
 		-framework UIKit \
 		-framework Foundation \
 		-framework QuartzCore \
+		-framework Metal \
 		-framework CoreGraphics \
 		-framework CoreFoundation \
 		-framework Security \
@@ -563,6 +590,15 @@ cp "$ARCHIVE" "$HOST_WORK/libshirei.a"
 apply_usage_descriptions "$HOST_WORK/Info.plist"
 apply_orientation "$HOST_WORK/Info.plist"
 
+# Stage AppIcon into the host work copy so xcodebuild can compile
+# ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon.
+write_appicon_catalog "$HOST_WORK/Assets.xcassets" "$ICON_PATH"
+if [[ -n "$ICON_PATH" && -f "$ICON_PATH" ]]; then
+	log "staged AppIcon from $ICON_PATH"
+else
+	log "staged placeholder AppIcon"
+fi
+
 # Pick physical device.
 pick_physical_device() {
 	if [[ -n "${SHIREI_IOS_DEVICE:-}" ]]; then
@@ -644,10 +680,14 @@ XCODE_STATUS=${PIPESTATUS[0]}
 set -e
 
 if [[ "$XCODE_STATUS" -ne 0 ]]; then
+	echo "ios-run: xcodebuild failed (see $BUILD_DIR/xcodebuild.log)." >&2
+	if [[ -f "$BUILD_DIR/xcodebuild.log" ]]; then
+		echo "" >&2
+		grep -E 'error:|fatal error:' "$BUILD_DIR/xcodebuild.log" | head -20 >&2 || true
+		echo "" >&2
+	fi
 	cat >&2 <<EOF
-ios-run: xcodebuild failed (see $BUILD_DIR/xcodebuild.log).
-
-Common fixes:
+If the error is about signing or provisioning:
   1. Xcode → Settings → Accounts → select your Apple ID → Manage Certificates
      → "+" → Apple Development  (creates cert + private key)
   2. Unlock the phone and tap Trust if prompted
@@ -666,30 +706,6 @@ SIGNED_APP="$(find "$DERIVED" -name "$APP_NAME.app" -type d 2>/dev/null | head -
 # Stage a copy for inspection / reinstall.
 rm -rf "$APP_DIR"
 cp -R "$SIGNED_APP" "$APP_DIR"
-
-# Icon after xcodebuild so we re-sign once with the final payload.
-if [[ -n "$ICON_PATH" && -f "$ICON_PATH" ]]; then
-	install_app_icon "$ICON_PATH" "$APP_DIR" iphoneos
-	# Re-sign with the same identity used by xcodebuild (from the embedded profile).
-	# codesign -s - works for sim only; device needs a real identity.
-	IDENT="${SHIREI_IOS_IDENTITY:-}"
-	if [[ -z "$IDENT" ]]; then
-		IDENT="$(security find-identity -v -p codesigning 2>/dev/null | grep 'Apple Development' | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
-	fi
-	if [[ -n "$IDENT" ]]; then
-		XCENT="$(find "$DERIVED" -name '*.xcent' 2>/dev/null | head -1 || true)"
-		if [[ -n "$XCENT" ]]; then
-			codesign --force --sign "$IDENT" --entitlements "$XCENT" --timestamp=none --generate-entitlement-der "$APP_DIR" 2>/dev/null \
-				|| codesign --force --sign "$IDENT" --timestamp=none --generate-entitlement-der "$APP_DIR" 2>/dev/null \
-				|| log "warning: re-sign after icon failed; install may reject the app"
-		else
-			codesign --force --sign "$IDENT" --timestamp=none --generate-entitlement-der "$APP_DIR" 2>/dev/null \
-				|| log "warning: re-sign after icon failed; install may reject the app"
-		fi
-	else
-		log "warning: no Apple Development identity for re-sign after icon"
-	fi
-fi
 
 log "built+signed $APP_DIR"
 

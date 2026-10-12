@@ -4,8 +4,7 @@ import (
 	_ "embed"
 )
 
-// Dock icon (disk usage pie / folders). Generated with Imagine; embedded so
-// `go run` works from any directory.
+// Dock icon (disk-usage platter). Embedded so `go run` works from any directory.
 //
 //go:embed icon.png
 var iconPNG []byte

@@ -13,7 +13,13 @@ import (
 // SetupWindow records the window's title and initial size in points. Call it
 // before Run.
 func SetupWindow(title string, width, height int) {
+	shirei.GetHost().WindowSize = shirei.Vec2{float32(width), float32(height)}
 	win32backend.SetupWindow(title, width, height)
+}
+
+// SetupQuiet maps the window without making it the foreground. Call before Run.
+func SetupQuiet() {
+	win32backend.SetupQuiet()
 }
 
 // SetupIcon records the path of the image (PNG etc.) used as the app's icon —
@@ -41,8 +47,8 @@ func SetupIconBytes(data []byte) {
 }
 
 // Run opens the window and runs the native event loop, invoking frameFn once per
-// frame. It must be called from the program's main goroutine and does not return
-// until the app exits.
+// frame. It must be called from the program's main goroutine and does not return:
+// quit paths call generic.ExitWithCleanup so AddExitCleanup handlers run.
 func Run(frameFn shirei.FrameFn) {
 	win32backend.Run(frameFn)
 }

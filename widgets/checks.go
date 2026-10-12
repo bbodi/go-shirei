@@ -12,7 +12,7 @@ import (
 
 // CheckBoxAttrs configures CheckBoxExt.
 type CheckBoxAttrs struct {
-	Accent Vec4 // zero value: use the package-level Accent
+	Accent Vec4 // zero value: use CurrentColorScheme.CheckBox
 	Size   f32  // box side length; zero value: 12
 }
 
@@ -24,41 +24,58 @@ func CheckBox(target *bool, label string) {
 // CheckBoxExt renders a checkbox with a per-instance accent and size, flipping
 // *target on click. See CheckBox for the plain form.
 func CheckBoxExt(target *bool, label string, attrs CheckBoxAttrs) {
+	style := CurrentColorScheme.CheckBox
+	if attrs.Accent != (Vec4{}) {
+		style = SelectionStyleWithAccent(style, attrs.Accent)
+	}
+	CheckBoxStyled(target, label, attrs, style, CurrentColorScheme.FocusRing)
+}
+
+// CheckBoxStyled renders a checkbox using explicit face, indicator, and focus
+// colors. Colors are literal, including transparent zeros; Accent is ignored.
+// The label inherits the surrounding text style. Size and interaction match
+// CheckBoxExt. This renderer does not consult the active color scheme.
+func CheckBoxStyled(target *bool, label string, attrs CheckBoxAttrs, style SelectionStyle, focusRing Vec4) {
 	if attrs.Size == 0 {
 		attrs.Size = 12
 	}
 	attrs.Size = comfort(attrs.Size)
-	accent := AccentOrFallback(attrs.Accent, DefaultAccent)
 	corners := attrs.Size * 0.28
 	padTop := attrs.Size * 0.14
-	gap := comfort(6)
+	gap := comfort(3)
 	labelSize := comfort(12)
 
 	Container(Attrs(Row, Gap(gap), CrossMid), func() {
 		st := ProcessToggleEvents(target, false)
+		NextAccessRole("checkbox")
+		NextAccessChecked(*target)
+		AssignAccess()
 
-		boxBG := Vec4{0, 0, 100, 1}
-		grad := Vec4{0, 0, -12, 0}
-		if st.Hovered {
-			boxBG = Vec4{accent[0], accent[1] * 0.3, 96, 1}
-		}
+		stateStyle := style.Unselected
 		if *target {
-			grad[2] = 12
-			boxBG = accent
-			if st.Hovered {
-				boxBG[2] += 5
-			}
+			stateStyle = style.Selected
+		}
+		paint := stateStyle.Normal
+		if st.Active {
+			paint = stateStyle.Pressed
+		} else if st.Hovered {
+			paint = stateStyle.Hovered
 		}
 
 		// FixSize, not MinSize: the oversized tick glyph's own layout box
 		// (see below) is bigger than the box and must not grow it — Clip
 		// then hides the glyph's overflow instead of letting it expand.
-		Container(Attrs(FixSize(attrs.Size, attrs.Size), Pad4(padTop, 0, 0, 0), Corners(corners), BackgroundVec(boxBG), GradVec(grad), BorderColor(accent[0], accent[1], accent[2], accent[3]), BorderWidth(1.5), Clip, Center), func() {
-			if *target {
-				// SymITick's ink sits well inside its own em box, so it needs
-				// to be sized well past the box to read as a bold checkmark.
-				Icon(SymITick, FontSize(attrs.Size*1.5), TextColor(0, 0, 100, 1))
-			}
+		Container(Attrs(Pad(3)), func() {
+			Container(Attrs(FixSize(attrs.Size, attrs.Size), NoClip), func() {
+				Container(Attrs(FixSize(attrs.Size, attrs.Size), Pad4(padTop, 0, 0, 0), Corners(corners), BackgroundVec(paint.Background), GradVec(paint.Gradient), BorderColorVec(paint.Border), BorderWidth(1), Clip, Center), func() {
+					if *target {
+						Icon(SymITick, FontSize(attrs.Size*1.5), TextColorVec(paint.Indicator))
+					}
+				})
+				if st.FocusVisible {
+					widgetFocusOutline(Vec2{attrs.Size, attrs.Size}, corners, focusRing)
+				}
+			})
 		})
 
 		if label != "" {
@@ -69,26 +86,66 @@ func CheckBoxExt(target *bool, label string, attrs CheckBoxAttrs) {
 
 // OptionButtonAttrs configures OptionButtonExt.
 type OptionButtonAttrs struct {
-	Accent Vec4 // zero value: use the package-level Accent
+	Accent Vec4 // zero value: use the active scheme
 	Size   f32  // circle diameter; zero value: 18
 }
 
-// OptionButton is a radio button: a completed click sets *target to this
-// button's value. Several sharing one target are mutually exclusive.
-func OptionButton[T comparable](target *T, label string, value T) {
-	OptionButtonExt(target, label, value, OptionButtonAttrs{})
+var currentOptionGroup any
+
+type optionGroupRun[T comparable] struct {
+	target *T
 }
 
-// OptionButtonExt is OptionButton with a per-instance accent/size, the same
-// pattern as CheckBoxExt — selected fills with the accent color and shows a
-// white dot; unselected is an accent-outlined ring, same as an unchecked box.
+// OptionGroup is a mutually exclusive set of OptionButton calls bound to
+// *target. The group container is the access parent (role radiogroup).
+//
+//	NextAccessName("mood")
+//	OptionGroup(&mood, func() {
+//	    NextAccessName("great")
+//	    OptionButton("Great", "great")
+//	})
+func OptionGroup[T comparable](target *T, body func()) {
+	prev := currentOptionGroup
+	currentOptionGroup = &optionGroupRun[T]{target: target}
+	defer func() { currentOptionGroup = prev }()
+	Container(Attrs(), func() {
+		NextAccessRole("radiogroup")
+		AssignAccess()
+		if body != nil {
+			body()
+		}
+	})
+}
+
+func optionGroupTarget[T comparable]() *T {
+	run, ok := currentOptionGroup.(*optionGroupRun[T])
+	if !ok || run == nil || run.target == nil {
+		panic("widgets: OptionButton must be called from OptionGroup")
+	}
+	return run.target
+}
+
+// OptionButton is a radio button inside OptionGroup: a completed click sets
+// the group's target to this button's value.
+func OptionButton[T comparable](label string, value T) {
+	OptionButtonExt(optionGroupTarget[T](), label, value, OptionButtonAttrs{})
+}
+
+// OptionButtonExt resolves radio paint with an optional accent and size override.
 func OptionButtonExt[T comparable](target *T, label string, value T, attrs OptionButtonAttrs) {
+	style := CurrentColorScheme.Radio
+	if attrs.Accent != (Vec4{}) {
+		style = SelectionStyleWithAccent(style, attrs.Accent)
+	}
+	OptionButtonStyled(target, label, value, attrs, style, CurrentColorScheme.FocusRing)
+}
+
+// OptionButtonStyled renders a radio with literal paint and focus colors. Accent is ignored.
+func OptionButtonStyled[T comparable](target *T, label string, value T, attrs OptionButtonAttrs, style SelectionStyle, focusRing Vec4) {
 	if attrs.Size == 0 {
 		attrs.Size = 18
 	}
 	attrs.Size = comfort(attrs.Size)
-	accent := AccentOrFallback(attrs.Accent, DefaultAccent)
-	grad := Vec4{0, 0, -12, 0}
 	gap := comfort(6)
 	labelSize := comfort(12)
 
@@ -98,23 +155,28 @@ func OptionButtonExt[T comparable](target *T, label string, value T, attrs Optio
 			*target = value
 		}
 		selected := *target == value
-
-		ringBG := Vec4{0, 0, 100, 1}
-		if st.Hovered {
-			ringBG = Vec4{accent[0], accent[1] * 0.3, 96, 1}
+		NextAccessRole("radio")
+		NextAccessChecked(selected)
+		AssignAccess()
+		if st.FocusVisible {
+			ModAttrs(BorderWidth(2), BorderColorVec(focusRing), Corners(3))
 		}
+
+		stateStyle := style.Unselected
 		if selected {
-			ringBG = accent
-			grad[2] = 12
-			if st.Hovered {
-				ringBG[2] += 5
-			}
+			stateStyle = style.Selected
+		}
+		paint := stateStyle.Normal
+		if st.Active {
+			paint = stateStyle.Pressed
+		} else if st.Hovered {
+			paint = stateStyle.Hovered
 		}
 
-		Container(Attrs(FixSize(attrs.Size, attrs.Size), Corners(attrs.Size/2), BackgroundVec(ringBG), GradVec(grad), BorderColor(accent[0], accent[1], accent[2], accent[3]), BorderWidth(1.5), Center), func() {
+		Container(Attrs(FixSize(attrs.Size, attrs.Size), Corners(attrs.Size/2), BackgroundVec(paint.Background), GradVec(paint.Gradient), BorderColorVec(paint.Border), BorderWidth(1.5), Center), func() {
 			if selected {
 				dot := attrs.Size * 0.4
-				Element(Attrs(FixSize(dot, dot), Corners(dot/2), Background(accent[0], 10, 98, 1)))
+				Element(Attrs(FixSize(dot, dot), Corners(dot/2), BackgroundVec(paint.Indicator)))
 			}
 		})
 
@@ -126,12 +188,11 @@ func OptionButtonExt[T comparable](target *T, label string, value T, attrs Optio
 
 // ToggleSwitchAttrs configures ToggleSwitchExt.
 type ToggleSwitchAttrs struct {
-	Accent Vec4 // zero value: use the package-level Accent
+	Accent Vec4 // zero value: use the active scheme
 	Height f32  // track height; zero value: 24
 }
 
-// ToggleSwitch is an iOS-style on/off switch: accent-filled track with a
-// white knob when on, pale gray track when off.
+// ToggleSwitch draws an on/off track with a sliding knob using the active scheme.
 func ToggleSwitch(on *bool) {
 	ToggleSwitchExt(on, ToggleSwitchAttrs{})
 }
@@ -139,33 +200,44 @@ func ToggleSwitch(on *bool) {
 // ToggleSwitchExt renders a toggle switch with a per-instance accent and height,
 // flipping *on on a completed click (ProcessToggleEvents — same model as CheckBox).
 func ToggleSwitchExt(on *bool, attrs ToggleSwitchAttrs) {
+	style := CurrentColorScheme.Switch
+	if attrs.Accent != (Vec4{}) {
+		style = SelectionStyleWithAccent(style, attrs.Accent)
+	}
+	ToggleSwitchStyled(on, attrs, style, CurrentColorScheme.FocusRing)
+}
+
+// ToggleSwitchStyled renders a switch with literal track, knob, and focus paint. Accent is ignored.
+func ToggleSwitchStyled(on *bool, attrs ToggleSwitchAttrs, style SelectionStyle, focusRing Vec4) {
 	if attrs.Height == 0 {
 		attrs.Height = 24
 	}
 	attrs.Height = comfort(attrs.Height)
-	accent := AccentOrFallback(attrs.Accent, DefaultAccent)
 	width := attrs.Height * 1.8
 	margin := attrs.Height * 0.1
 	knobSize := attrs.Height - margin*2
 
 	Container(Attrs(Row, FixSize(width, attrs.Height), Corners(attrs.Height/2), Pad(margin), CrossAlign(AlignMiddle)), func() {
 		st := ProcessToggleEvents(on, false)
+		NextAccessRole("switch")
+		NextAccessChecked(*on)
+		AssignAccess()
 
-		trackBG := Vec4{0, 0, 88, 1}
-		trackBorder := Vec4{0, 0, 75, 1}
-		var grad Vec4
-		if st.Hovered {
-			trackBG[2] -= 3
-		}
+		stateStyle := style.Unselected
 		if *on {
-			trackBG = accent
-			trackBorder = accent // same as fill: reads as no border, like a filled checkbox
-			grad = Vec4{0, 0, -8, 0}
-			if st.Hovered {
-				trackBG[2] += 4
-			}
+			stateStyle = style.Selected
 		}
-		ModAttrs(BackgroundVec(trackBG), GradVec(grad), BorderColor(trackBorder[0], trackBorder[1], trackBorder[2], trackBorder[3]), BorderWidth(1))
+		paint := stateStyle.Normal
+		if st.Active {
+			paint = stateStyle.Pressed
+		} else if st.Hovered {
+			paint = stateStyle.Hovered
+		}
+		border, width := paint.Border, float32(1)
+		if st.FocusVisible {
+			border, width = focusRing, 2
+		}
+		ModAttrs(BackgroundVec(paint.Background), GradVec(paint.Gradient), BorderColorVec(border), BorderWidth(width))
 
 		if *on {
 			// spacer to push the knob to the right
@@ -175,6 +247,6 @@ func ToggleSwitchExt(on *bool, attrs ToggleSwitchAttrs) {
 		}
 
 		// the knob
-		Container(Attrs(FixSize(knobSize, knobSize), Corners(knobSize/2), Background(0, 0, 100, 1), Grad(0, 0, -6, 0), BoxShadow(3)), func() {})
+		Container(Attrs(FixSize(knobSize, knobSize), Corners(knobSize/2), BackgroundVec(paint.Indicator), GradVec(paint.IndicatorGradient), BoxShadow(3)), func() {})
 	})
 }

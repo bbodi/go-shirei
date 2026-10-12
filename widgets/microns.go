@@ -53,7 +53,7 @@ func Icon(g IconGlyph, fns ...TextStyleFn) {
 	if g.Font != "" {
 		fns = append(fns, Fonts(g.Font))
 	}
-	Label(string(g.Rune), fns...)
+	DecorativeText(string(g.Rune), TextStyle(fns...))
 }
 
 func micron(r rune) IconGlyph {

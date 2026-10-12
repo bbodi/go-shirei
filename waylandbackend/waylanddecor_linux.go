@@ -5,6 +5,7 @@ package waylandbackend
 import (
 	zxdg "go.hasen.dev/shirei/internal/wayland/xdg"
 
+	g "go.hasen.dev/generic"
 	. "go.hasen.dev/shirei"
 	"go.hasen.dev/shirei/widgets"
 )
@@ -38,8 +39,12 @@ var csdEnabled = true
 // future CSD/fullscreen toggle) would drop it. Host.WindowSize is narrowed
 // to the content area during the app build, then restored to the surface so
 // a settle pass still sizes the root correctly (see jsbackend.wrapFrame).
-// drawFrame sets Host.WindowSize back to content after RunFrameFn. Popups
-// drain content-scoped so they layer under the titlebar.
+// drawFrame sets Host.WindowSize back to content after RunFrameFn.
+//
+// Popups drain at the root (core PopupsHost after this returns), not inside
+// the content viewport. Menu Float coords are root-absolute
+// (GetResolvedRectOf); parenting them under content, which is already
+// origin-y = titlebarHeight, dropped every panel by that height.
 func wrapFrame(appFn FrameFn) FrameFn {
 	return func() {
 		full := GetHost().WindowSize
@@ -49,7 +54,6 @@ func wrapFrame(appFn FrameFn) FrameFn {
 		}
 		ContainerWithKey("app-content", Attrs(Viewport), func() {
 			appFn()
-			PopupsHost()
 		})
 		GetHost().WindowSize = full
 	}
@@ -66,7 +70,7 @@ func drawTitlebar() {
 		Label(winTitle, FontSize(14), TextColor(0, 0, 25, 1))
 		widgets.Filler(1)
 		if closeButton() {
-			quit = true
+			g.ExitWithCleanup(0)
 		} else if startDrag {
 			startMove()
 		}
@@ -77,10 +81,14 @@ func drawTitlebar() {
 func closeButton() bool {
 	clicked := false
 	Container(Attrs(Row, Center, FixSize(26, 26), Corners(5)), func() {
+		NextAccessRole("button")
+		NextAccessLabel("Close window")
+		AssignAccess()
+		action, requested := ProcessAccessAction(AccessPress, false)
 		if IsHovered() {
 			ModAttrs(Background(5, 70, 62, 1))
 		}
-		if IsClicked() {
+		if IsClicked() || (requested && action.Kind == AccessPress) {
 			clicked = true
 		}
 		Label("×", FontSize(20), TextColor(0, 0, 25, 1))

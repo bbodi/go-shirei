@@ -34,8 +34,8 @@ func TestVirtualListRestoreFirstFrame(t *testing.T) {
 			ContainerWithKey(scope, Attrs(Viewport), func() {
 				if showList {
 					VirtualListViewExt(listKey, VirtualListAttrs{
-						ItemCount: itemCount,
-						ItemKey:   func(i int) any { return i },
+						ItemCount:  itemCount,
+						ItemKey:    func(i int) any { return i },
 						ItemHeight: func(i int, w f32) f32 { return itemHeight },
 						ItemView: func(i int, w f32) {
 							rendered[i] = true
@@ -72,5 +72,56 @@ func TestVirtualListRestoreFirstFrame(t *testing.T) {
 		// Clamped if tail is short — with 60 items of 20px in 200px view,
 		// index 25 should pin exactly.
 		t.Fatalf("firstVis=%d want %d", firstVis, restoreIndex)
+	}
+}
+
+func TestVirtualListScrollTo(t *testing.T) {
+	initFontsOnce.Do(shirei.InitFontSubsystem)
+	ResetInputSession()
+
+	scope := new(int)
+	listKey := new(int)
+	const itemCount = 60
+	const itemHeight f32 = 20
+	const restoreY f32 = 25 * itemHeight // same as index 25 at the top
+	var scrollY f32
+	var firstVis int
+	rendered := map[int]bool{}
+
+	frame := func() {
+		rendered = map[int]bool{}
+		shirei.GetHost().WindowSize = Vec2{400, 200}
+		RunFrameFn(func() {
+			ModAttrs(func(a *AttrSet) { a.Animations = 0 })
+			ContainerWithKey(scope, Attrs(Viewport), func() {
+				VirtualListViewExt(listKey, VirtualListAttrs{
+					ItemCount: itemCount,
+					ItemKey:   func(i int) any { return i },
+					ItemHeight: func(i int, w f32) f32 {
+						return itemHeight
+					},
+					ItemView: func(i int, w f32) {
+						rendered[i] = true
+					},
+					OutScrollOffset: &scrollY,
+					OutFirstVisible: &firstVis,
+				})
+			})
+		})
+	}
+
+	frame()
+	WithFrameLock(func() {
+		VirtualListView_ScrollTo(listKey, restoreY)
+	})
+	for range 6 {
+		frame()
+	}
+	if firstVis != 25 {
+		t.Fatalf("ScrollTo(%.0f): firstVis=%d want 25 (scrollY=%.1f rendered=%v)",
+			restoreY, firstVis, scrollY, rendered)
+	}
+	if Absf32(scrollY-restoreY) > 1 {
+		t.Fatalf("ScrollTo(%.0f): scrollY=%.1f", restoreY, scrollY)
 	}
 }

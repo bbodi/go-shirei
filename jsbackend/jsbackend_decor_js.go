@@ -13,16 +13,20 @@ import (
 // waylandbackend's CSD (waylanddecor_linux.go):
 //
 //   - SetupWindow sizes are content/client (parity with macOS/Win32). The
-//     floating shell is grown by titlebarHeight so chrome does not eat the body.
+//     floating shell is grown by titlebarHeight so chrome does not eat the body,
+//     then clamped to the host slot so it never opens larger than the desk.
+//     Mobile hosts and short/narrow host slots skip this and fill #shirei-root.
 //   - The canvas is the full surface (titlebar + content).
 //   - wrapFrame draws the titlebar in shirei and narrows Host.WindowSize so
 //     the app (and popups) see only the content area.
-//   - Titlebar drag moves the floating #shirei-root on the page.
+//   - Titlebar drag moves the canvas inside #shirei-root (the host slot).
 //   - Edge presses (resizeBorder px) start an interactive resize of that shell.
 //
-// Iframe embeds and full-bleed (SetupWindow 0×0) leave csd off so the parent
-// can size the iframe to the client area exactly. The 1px edge is a box-shadow
-// outside the layout box and does not need a size inflate.
+// #shirei-root fills leftover space in the page; in-flow siblings (a source
+// strip, a toolbar, …) keep theirs. The shell is sized against that slot.
+// Iframe embeds, mobile hosts, short/narrow host slots, and SetupWindow 0×0
+// leave csd off. The 1px edge is a box-shadow outside the layout box and does
+// not need a size inflate.
 
 const titlebarHeight = 34
 // resizeBorder is the surface-edge hit zone for interactive resize. Slightly
@@ -31,10 +35,29 @@ const titlebarHeight = 34
 const resizeBorder = 10
 const chromeMinW = 200
 const chromeMinH = 120 + titlebarHeight
+// chromeMargin is the gap between the floating shell and the host slot edge.
+const chromeMargin = 8
+// A host slot this narrow or short uses the full-bleed shell (no CSD), even
+// on a desktop OS — there is not enough desk for a floating window.
+const fullBleedMaxW = 700
+const fullBleedMaxH = 500
 
-// csdActive is true for top-level fixed-size shells (see useChrome).
+// csdActive is true while the top-level floating shell is in use.
 func csdActive() bool {
-	return winW > 0 && winH > 0 && !isEmbeddedFrame()
+	return floatingShell
+}
+
+// useFullBleedShell is true on a mobile host, or when the host slot is too
+// small for a floating window. Iframe embeds are handled separately.
+func useFullBleedShell() bool {
+	if isMobileHost() {
+		return true
+	}
+	vw, vh := deskSize()
+	if vw <= 0 || vh <= 0 {
+		return false
+	}
+	return vw <= fullBleedMaxW || vh <= fullBleedMaxH
 }
 
 // wrapFrame is the backend chrome wrapper (core knows nothing of decorations):
@@ -144,9 +167,9 @@ func startMove() {
 	// Seed start from current pointer so the first move is a no-op offset.
 	// client coords are filled on the next pointer event via chromePointerMove.
 	pt := GetInputState().MousePoint
-	// Approximate: mouse is surface-local; convert using current frame origin.
-	chromeStartX = frameLeft + float64(pt[0])
-	chromeStartY = frameTop + float64(pt[1])
+	dl, dt := deskClientOrigin()
+	chromeStartX = dl + frameLeft + float64(pt[0])
+	chromeStartY = dt + frameTop + float64(pt[1])
 	chromeOrigL = frameLeft
 	chromeOrigT = frameTop
 	chromeOrigW = winW
@@ -159,9 +182,9 @@ func tryStartResize(clientX, clientY float64) bool {
 	if !csdActive() {
 		return false
 	}
-	// Surface-local point: client relative to canvas origin = frame origin.
-	sx := float32(clientX - frameLeft)
-	sy := float32(clientY - frameTop)
+	dl, dt := deskClientOrigin()
+	sx := float32(clientX - dl - frameLeft)
+	sy := float32(clientY - dt - frameTop)
 	edge := resizeEdgeAt(sx, sy, float32(winW), float32(winH))
 	if edge == edgeNone {
 		return false
@@ -222,6 +245,7 @@ func chromePointerMove(clientX, clientY float64) {
 	winW, winH = w, h
 	frameLeft, frameTop = l, t
 	framePlaced = true
+	constrainShell()
 	applyFrameGeometry()
 }
 
@@ -251,18 +275,124 @@ func resizeEdgeAt(x, y, w, h float32) uint32 {
 	return edge
 }
 
-// applyFrameGeometry writes the floating shell position and size to the DOM.
-func applyFrameGeometry() {
+// deskElem is the host slot (#shirei-root): leftover page space after in-flow
+// siblings. The floating canvas is positioned inside it.
+func deskElem() js.Value {
 	doc := js.Global().Get("document")
-	root := doc.Call("getElementById", "shirei-root")
+	if !doc.Truthy() {
+		return js.Undefined()
+	}
+	return doc.Call("getElementById", "shirei-root")
+}
+
+func deskSize() (w, h float64) {
+	if root := deskElem(); root.Truthy() {
+		w = root.Get("clientWidth").Float()
+		h = root.Get("clientHeight").Float()
+	}
+	if w <= 0 {
+		w = js.Global().Get("innerWidth").Float()
+	}
+	if h <= 0 {
+		h = js.Global().Get("innerHeight").Float()
+	}
+	return w, h
+}
+
+func deskClientOrigin() (left, top float64) {
+	root := deskElem()
 	if !root.Truthy() {
+		return 0, 0
+	}
+	r := root.Call("getBoundingClientRect")
+	if !r.Truthy() {
+		return 0, 0
+	}
+	return r.Get("left").Float(), r.Get("top").Float()
+}
+
+// availRect is the desk the floating shell may occupy, in host-slot coordinates:
+// the host's content box minus chromeMargin.
+func availRect() (x, y, w, h float64, ok bool) {
+	cw, ch := deskSize()
+	if cw <= 0 || ch <= 0 {
+		return 0, 0, 0, 0, false
+	}
+	m := float64(chromeMargin)
+	x, y = m, m
+	w = cw - 2*m
+	h = ch - 2*m
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	return x, y, w, h, true
+}
+
+// placeNewShell caps the floating window to the available desk and centers it.
+func placeNewShell() {
+	ax, ay, aw, ah, ok := availRect()
+	if !ok {
+		frameLeft = chromeMargin
+		frameTop = chromeMargin
+		framePlaced = true
 		return
 	}
-	rs := root.Get("style")
-	rs.Set("left", strconv.FormatFloat(frameLeft, 'f', 0, 64)+"px")
-	rs.Set("top", strconv.FormatFloat(frameTop, 'f', 0, 64)+"px")
-	rs.Set("width", strconv.Itoa(winW)+"px")
-	rs.Set("height", strconv.Itoa(winH)+"px")
+	maxW, maxH := int(aw), int(ah)
+	if winW > maxW {
+		winW = maxW
+	}
+	if winH > maxH {
+		winH = maxH
+	}
+	frameLeft = ax + (aw-float64(winW))/2
+	frameTop = ay + (ah-float64(winH))/2
+	framePlaced = true
+}
+
+// constrainShell caps the floating window to the available desk and shifts
+// it so the rect stays on-screen. Interactive min-size can lose to this cap
+// when the viewport is smaller than chromeMinW/chromeMinH.
+func constrainShell() {
+	ax, ay, aw, ah, ok := availRect()
+	if !ok {
+		return
+	}
+	maxW, maxH := int(aw), int(ah)
+	if winW > maxW {
+		winW = maxW
+	}
+	if winH > maxH {
+		winH = maxH
+	}
+	if frameLeft < ax {
+		frameLeft = ax
+	}
+	if frameTop < ay {
+		frameTop = ay
+	}
+	if frameLeft+float64(winW) > ax+aw {
+		frameLeft = ax + aw - float64(winW)
+	}
+	if frameTop+float64(winH) > ay+ah {
+		frameTop = ay + ah - float64(winH)
+	}
+}
+
+// applyFrameGeometry writes the floating canvas position and size to the DOM.
+func applyFrameGeometry() {
+	doc := js.Global().Get("document")
+	canvas := doc.Call("getElementById", "shirei-canvas")
+	if !canvas.Truthy() {
+		return
+	}
+	cs := canvas.Get("style")
+	cs.Set("left", strconv.FormatFloat(frameLeft, 'f', 0, 64)+"px")
+	cs.Set("top", strconv.FormatFloat(frameTop, 'f', 0, 64)+"px")
+	cs.Set("width", strconv.Itoa(winW)+"px")
+	cs.Set("height", strconv.Itoa(winH)+"px")
 	if html := doc.Get("documentElement"); html.Truthy() {
 		html.Call("setAttribute", "data-shirei-width", strconv.Itoa(winW))
 		html.Call("setAttribute", "data-shirei-height", strconv.Itoa(winH))

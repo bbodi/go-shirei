@@ -1055,7 +1055,7 @@ func countTextInputUnderlineSurfaces(out FrameOutputData, height float32) int {
 	var n int
 	for _, s := range out.Surfaces {
 		if s.Stroke == 0 &&
-			s.Color1 == (Vec4{0, 0, 30, 1}) &&
+			s.Color1 == CurrentColorScheme.TextInput.Caret &&
 			abs32(s.Rect.Size[1]-height) < 0.1 &&
 			s.Rect.Size[0] > 0 {
 			n++
@@ -1330,7 +1330,7 @@ func TestCompositionUnderlineDoesNotBridgeBidi(t *testing.T) {
 	// Total underline width should stay near JP only (~2 em), not JP+Arabic.
 	var underW float32
 	for _, s := range h.out.Surfaces {
-		if s.Stroke == 0 && s.Color1 == (Vec4{0, 0, 30, 1}) && abs32(s.Rect.Size[1]-1) < 0.1 {
+		if s.Stroke == 0 && s.Color1 == CurrentColorScheme.TextInput.Caret && abs32(s.Rect.Size[1]-1) < 0.1 {
 			underW += s.Rect.Size[0]
 		}
 	}
@@ -1642,6 +1642,77 @@ func TestTextInputDescendersNotClipped(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no descender ink below the em box (y %d..%d) — clipping descenders?", top+1, top+4*s)
+	}
+}
+
+// Latin glyphs in a mixed Latin+Arabic field sit on the same vertical
+// origin as a Latin-only field. Fallback-face descenders do not add
+// top pad to the text block.
+func TestTextInputMixedScriptDoesNotShiftDown(t *testing.T) {
+	InitFontSubsystem()
+	st := DefaultTextStyle()
+	mixed := ShapeText("ABC dest ابجد", st)
+	if len(mixed.Lines) == 0 {
+		t.Skip("no usable system fonts for text shaping")
+	}
+	var latinFont, arabicFont FontId
+	for _, seg := range mixed.Lines[0].Segments {
+		for _, g := range seg.Glyphs {
+			if int(g.Cluster) < 0 || int(g.Cluster) >= len(mixed.Runes) {
+				continue
+			}
+			r := mixed.Runes[g.Cluster]
+			switch {
+			case r >= 0x0600 && r <= 0x06FF:
+				arabicFont = g.FontId
+			case (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z'):
+				if latinFont == 0 {
+					latinFont = g.FontId
+				}
+			}
+		}
+	}
+	if arabicFont == 0 || arabicFont == latinFont {
+		t.Skip("no distinct Arabic fallback face")
+	}
+
+	firstInkY := func(buf string) int {
+		b := buf
+		attrs := DefaultTextInputAttrs()
+		attrs.NoAutoFocus = true
+		img := RenderToImage(220, 60, func() {
+			Container(Attrs(Viewport), func() {
+				TextInputExt(&b, attrs)
+			})
+		})
+		s := int(HeadlessScale)
+		if s < 1 {
+			s = 1
+		}
+		// Left of the field, past the 1px border — "ABC" sits here in both
+		// strings (LTR paragraph, Arabic run on the right).
+		for y := 0; y < img.Bounds().Dy(); y++ {
+			for x := 2 * s; x < 70*s; x++ {
+				r, g, b, _ := img.At(x, y).RGBA()
+				if r>>8 < 100 && g>>8 < 100 && b>>8 < 100 {
+					return y
+				}
+			}
+		}
+		return -1
+	}
+
+	latinY := firstInkY("ABC dest")
+	mixedY := firstInkY("ABC dest ابجد")
+	if latinY < 0 || mixedY < 0 {
+		t.Fatalf("no glyph ink: latin Y=%d mixed Y=%d", latinY, mixedY)
+	}
+	s := int(HeadlessScale)
+	if s < 1 {
+		s = 1
+	}
+	if d := mixedY - latinY; d > s+1 {
+		t.Fatalf("mixed-script ink starts %d px lower than latin-only (latin Y=%d mixed Y=%d)", d, latinY, mixedY)
 	}
 }
 
