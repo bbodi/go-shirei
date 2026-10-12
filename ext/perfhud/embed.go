@@ -147,7 +147,7 @@ func (o *Overlay) Frame(devW, devH int, scale float32, fn FrameFn) []byte {
 	} else {
 		o.buf = o.buf[:need]
 	}
-	o.rend.RenderInto(o.buf, devW*4, devW, devH, scale, out.Surfaces)
+	o.rend.RenderInto(o.buf, devW*4, devW, devH, scale, out.Surfaces, out.GlyphRuns)
 	return o.buf
 }
 

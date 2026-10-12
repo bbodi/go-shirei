@@ -254,7 +254,7 @@ func drawPanel() {
 	}
 
 	th := &Config.Theme
-	id := Container(Attrs(Float(x, y), InFront, FixWidth(w), Gap(4), Pad2(5, pad),
+	id := Container(Attrs(Float(x, y), InFront, NoAnimate, FixWidth(w), Gap(4), Pad2(5, pad),
 		BackgroundVec(th.Panel), BorderWidth(1), BorderColorVec(th.Border), Corners(6)), func() {
 		inner := w - 2*pad
 		for i := range Core.Charts {

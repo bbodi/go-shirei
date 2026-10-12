@@ -24,7 +24,7 @@ func embedRender(t *testing.T, transparent bool) *Framebuffer {
 	}
 	var rend SoftRenderer
 	rend.Transparent = transparent
-	return rend.Render(out.Surfaces, 400, 300, 1)
+	return rend.Render(out.Surfaces, out.GlyphRuns, 400, 300, 1)
 }
 
 func alphaAt(fb *Framebuffer, x, y int) byte {
