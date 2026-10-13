@@ -137,6 +137,7 @@ func (*handler) HandleKeyboardLeave(wl.KeyboardLeaveEvent) {
 
 func (*handler) HandleKeyboardRepeatInfo(ev wl.KeyboardRepeatInfoEvent) {
 	repeater.setInfo(ev.Rate, ev.Delay)
+	wlDebug("key repeat: rate=%d/s delay=%dms", ev.Rate, ev.Delay)
 }
 
 // onKey maps a key event to a shirei key code and, for printable presses, the

@@ -223,7 +223,8 @@ func (*handler) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 		wmBase = wlclient.RegistryBindWmBaseInterface(registry, ev.Name, 1)
 		zxdg.WmBaseAddListener(wmBase, h)
 	case "wl_seat":
-		seat = wlclient.RegistryBindSeatInterface(registry, ev.Name, 1)
+		// v4 for wl_keyboard.repeat_info (the user's repeat rate/delay).
+		seat = wlclient.RegistryBindSeatInterface(registry, ev.Name, min(ev.Version, 4))
 		wlclient.SeatAddListener(seat, h)
 	case "wl_output":
 		v := ev.Version // need v2 for the scale event; clamp to what's advertised
